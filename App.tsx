@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Animated, Appearance, Image, Keyboard, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, SafeAreaView,
+  Alert, Animated, Appearance, Image, ImageBackground, Keyboard, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, SafeAreaView,
   ScrollView, StatusBar, StyleSheet, Text, TextInput, View, useColorScheme,
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
@@ -53,6 +53,13 @@ const DEFAULT_WATER_GOAL = 3000;
 const DEFAULT_PRESETS = [150, 250, 500];
 const DAILY_LABEL = 'Daily checklist';
 const BAR_H = 72;
+const MAX_TASK_NAME = 120;
+const MAX_SECTION_NAME = 60;
+const MAX_TAG_NAME = 30;
+const MAX_TEMPLATE_NAME = 60;
+const MAX_TEMPLATE_DESCRIPTION = 180;
+const MAX_TEMPLATE_TEXT_LENGTH = 4000;
+const MAX_TEMPLATE_LINES = 30;
 
 const EmailIcon = ({ color = '#7A7F7A' }: { color?: string }) => (
   <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -198,19 +205,21 @@ const templateToText = (tasks: TemplateTask[]) => {
 };
 
 /* ───────────── Database ───────────── */
+let dbInitQueue: Promise<void> = Promise.resolve();
 async function initialise(db: SQLiteDatabase) {
-  try { await db.execAsync('PRAGMA journal_mode = WAL'); } catch { /* some iOS builds reject this */ }
-  try { await db.execAsync('PRAGMA foreign_keys = ON'); } catch {}
+  const run = async () => {
+    try { await db.execAsync('PRAGMA journal_mode = WAL'); } catch { /* some iOS builds reject this */ }
+    try { await db.execAsync('PRAGMA foreign_keys = ON'); } catch {}
 
-  await db.execAsync(`
-    CREATE TABLE IF NOT EXISTS tasks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, title TEXT NOT NULL,
-      category TEXT NOT NULL DEFAULT 'General', completed INTEGER NOT NULL DEFAULT 0,
-      skipped INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
-      section TEXT DEFAULT NULL, section_time TEXT DEFAULT NULL,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, title TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'General', completed INTEGER NOT NULL DEFAULT 0,
+        skipped INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
+        section TEXT DEFAULT NULL, section_time TEXT DEFAULT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
   await db.execAsync('CREATE INDEX IF NOT EXISTS tasks_date_idx ON tasks(date);');
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS water_entries (
@@ -267,11 +276,15 @@ async function initialise(db: SQLiteDatabase) {
       }
     });
   }
-  const defaults: [string, string][] = [
-    ['water_goal_ml', String(DEFAULT_WATER_GOAL)], ['water_presets', DEFAULT_PRESETS.join(',')],
-    ['theme', 'system'],
-  ];
-  for (const [k, v] of defaults) await db.runAsync('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)', k, v);
+    const defaults: [string, string][] = [
+      ['water_goal_ml', String(DEFAULT_WATER_GOAL)], ['water_presets', DEFAULT_PRESETS.join(',')],
+      ['theme', 'system'],
+    ];
+    for (const [k, v] of defaults) await db.runAsync('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)', k, v);
+  };
+
+  dbInitQueue = dbInitQueue.then(run, run).then(() => undefined, () => undefined);
+  await dbInitQueue;
 }
 
 const HISTORY_SQL = `
@@ -408,9 +421,10 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: any) => vo
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: isDark ? '#121512' : '#F6F5F1', paddingTop: 14 }}>
-      <Pressable style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 }} onPress={Keyboard.dismiss}>
-        <View style={{ width: '100%', maxWidth: 420, alignItems: 'center' }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: isDark ? '#121512' : '#F6F5F1' }}>
+      <ImageBackground source={require('./assets/bg.png')} style={{ flex: 1, width: '100%', height: '100%' }} resizeMode="cover">
+        <Pressable style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, paddingTop: 14 }} onPress={Keyboard.dismiss}>
+          <View style={{ width: '100%', maxWidth: 420, alignItems: 'center' }}>
           <View style={{ width: 150, height: 96, alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
             <Image source={imageSource} style={{ width: 128, height: 128, resizeMode: 'contain' }} />
           </View>
@@ -471,8 +485,9 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: any) => vo
               <Text style={{ fontSize: 16, fontWeight: '700', color: isDark ? '#F1F3EF' : '#1E2B26' }}> Continue with Apple</Text>
             </Pressable>
           </View>
-        </View>
-      </Pressable>
+          </View>
+        </Pressable>
+      </ImageBackground>
     </SafeAreaView>
   );
 }
@@ -543,6 +558,12 @@ function AppShell({ session }: { session: any }) {
   // toast (undo)
   const [toast, setToast] = useState<{ message: string; label?: string; onPress?: () => void } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dbWriteQueue = useRef(Promise.resolve());
+  const enqueueDbWrite = useCallback(<T,>(run: () => Promise<T>) => {
+    const next = dbWriteQueue.current.then(run, run);
+    dbWriteQueue.current = next.then(() => undefined, () => undefined);
+    return next;
+  }, []);
   const showToast = (message: string, label?: string, onPress?: () => void) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     setToast({ message, label, onPress });
@@ -613,7 +634,7 @@ function AppShell({ session }: { session: any }) {
   const safe = useCallback(async (fn: () => Promise<void>) => {
     try { await fn(); } catch (e) { Alert.alert('Something went wrong', String(e)); }
   }, []);
-  const setSetting = (key: string, value: string) => db.runAsync('INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)', key, value);
+  const setSetting = (key: string, value: string) => enqueueDbWrite(() => db.runAsync('INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)', key, value));
   const nextOrder = async (date: string) =>
     (await db.getFirstAsync<{ n: number }>('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM tasks WHERE date = ?', date))?.n ?? 0;
 
@@ -704,31 +725,50 @@ function AppShell({ session }: { session: any }) {
     return () => { alive = false; };
   }, [db, search, dataVersion]);
 
-  const taskKey = (task: Pick<Task, 'date' | 'title' | 'section' | 'section_time'>) => {
-    const title = (task.title || '').trim().toLowerCase();
+  const taskKey = (task: Pick<Task, 'date' | 'title' | 'section' | 'section_time' | 'sort_order'>) => {
     const date = (task.date || '').trim();
+    const title = (task.title || '').trim().toLowerCase();
     const section = (task.section || '').trim().toLowerCase();
     const time = (task.section_time || '').trim().toLowerCase();
-    return `${date}|${title}|${section}|${time}`;
+    const order = Number(task.sort_order ?? 0);
+    return `${date}|${order}|${title}|${section}|${time}`;
+  };
+  const taskMatches = (a: Pick<Task, 'date' | 'title' | 'section' | 'section_time' | 'sort_order'>, b: Pick<Task, 'date' | 'title' | 'section' | 'section_time' | 'sort_order'>) => {
+    const aTitle = (a.title ?? '').trim().toLowerCase();
+    const bTitle = (b.title ?? '').trim().toLowerCase();
+    const aSection = (a.section ?? '').trim().toLowerCase();
+    const bSection = (b.section ?? '').trim().toLowerCase();
+    const aTime = (a.section_time ?? '').trim().toLowerCase();
+    const bTime = (b.section_time ?? '').trim().toLowerCase();
+    return a.date === b.date && aTitle === bTitle && aSection === bSection && aTime === bTime && Number(a.sort_order ?? 0) === Number(b.sort_order ?? 0);
+  };
+  const ensureLocalTaskRow = async (task: Pick<Task, 'date' | 'title' | 'category' | 'section' | 'section_time' | 'sort_order'>) => {
+    const existing = await enqueueDbWrite(() => db.getFirstAsync<Task>(
+      'SELECT * FROM tasks WHERE date = ? AND title = ? AND COALESCE(section, \'\') = ? AND COALESCE(section_time, \'\') = ? AND sort_order = ?',
+      task.date, task.title, task.section ?? '', task.section_time ?? '', Number(task.sort_order ?? 0)));
+    if (existing) return existing.id;
+
+    const result = await enqueueDbWrite(() => db.runAsync(
+      'INSERT INTO tasks(date, title, category, section, section_time, sort_order, completed, skipped) VALUES (?, ?, ?, ?, ?, ?, 0, 0)',
+      task.date, task.title, task.category || 'General', task.section ?? null, task.section_time ?? null, Number(task.sort_order ?? 0)));
+    return Number((result as any)?.lastInsertRowId ?? 0);
   };
 
   const mergeLocalAndRemoteTasks = useCallback((local: Task[], remote: Task[]) => {
     const merged = new Map<string, Task>();
 
-    const add = (task: Task) => {
+    const add = (task: Task, source: 'local' | 'remote') => {
       const key = taskKey(task);
       const existing = merged.get(key);
       if (!existing) {
         merged.set(key, task);
         return;
       }
-      const existingTime = Number(existing.id) || 0;
-      const nextTime = Number(task.id) || 0;
-      if (nextTime > existingTime) merged.set(key, task);
+      if (source === 'local') merged.set(key, task);
     };
 
-    local.forEach(add);
-    remote.forEach(add);
+    local.forEach(task => add(task, 'local'));
+    remote.forEach(task => add(task, 'remote'));
 
     return Array.from(merged.values()).sort((a, b) => {
       const aOrder = Number(a.sort_order ?? 0);
@@ -842,7 +882,11 @@ function AppShell({ session }: { session: any }) {
   const saveTask = () => safe(async () => {
     const title = taskTitle.trim();
     if (!title) { Alert.alert('Add a task name', 'Enter a short name for this checklist item.'); return; }
+    if (title.length > MAX_TASK_NAME) { Alert.alert('Task name too long', `Keep it under ${MAX_TASK_NAME} characters.`); return; }
     const section = taskSection.trim() || null;
+    if (section && section.length > MAX_SECTION_NAME) { Alert.alert('Section name too long', `Keep section names under ${MAX_SECTION_NAME} characters.`); return; }
+    if (taskTag.trim() && taskTag.trim().length > MAX_TAG_NAME) { Alert.alert('Tag too long', `Keep tags under ${MAX_TAG_NAME} characters.`); return; }
+    if (taskTime.trim() && taskTime.trim().length > 16) { Alert.alert('Time is too long', 'Use a short time like 11:00 AM.'); return; }
     let time: string | null = null;
     if (section && taskTime.trim()) {
       time = normalizeClock(taskTime);
@@ -868,10 +912,11 @@ function AppShell({ session }: { session: any }) {
     bump();
   });
   const toggleTask = (task: Task) => safe(async () => {
-    const completing = !task.completed;
-    setLocalTasks(prev => prev.map(t => t.id === task.id ? { ...t, completed: completing ? 1 : 0, skipped: 0 } : t));
-    if (completing) haptic(tasks.every(t => t.id === task.id || t.completed || t.skipped) ? 'success' : 'light');
-    await db.runAsync('UPDATE tasks SET completed = ?, skipped = 0 WHERE id = ?', completing ? 1 : 0, task.id);
+    const targetId = localTasks.find(t => taskMatches(t, task))?.id ?? await ensureLocalTaskRow(task);
+    const completing = !task.completed || !!task.skipped;
+    setLocalTasks(prev => prev.map(t => t.id === targetId ? { ...t, completed: completing ? 1 : 0, skipped: 0 } : t));
+    if (completing) haptic(tasks.every(t => t.id === targetId || t.completed || t.skipped) ? 'success' : 'light');
+    await enqueueDbWrite(() => db.runAsync('UPDATE tasks SET completed = ?, skipped = 0 WHERE id = ?', completing ? 1 : 0, targetId));
     const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
     setLocalTasks(refreshed);
     if (session?.user?.id) {
@@ -880,10 +925,11 @@ function AppShell({ session }: { session: any }) {
     bump();
   });
   const skipTask = (task: Task) => safe(async () => {
+    const targetId = localTasks.find(t => taskMatches(t, task))?.id ?? await ensureLocalTaskRow(task);
     const skipping = !task.skipped;
-    setLocalTasks(prev => prev.map(t => t.id === task.id ? { ...t, skipped: skipping ? 1 : 0, completed: 0 } : t));
-    if (skipping) haptic(tasks.every(t => t.id === task.id || t.completed || t.skipped) ? 'success' : 'light');
-    await db.runAsync('UPDATE tasks SET skipped = ?, completed = 0 WHERE id = ?', skipping ? 1 : 0, task.id);
+    setLocalTasks(prev => prev.map(t => t.id === targetId ? { ...t, skipped: skipping ? 1 : 0, completed: 0 } : t));
+    if (skipping) haptic(tasks.every(t => t.id === targetId || t.completed || t.skipped) ? 'success' : 'light');
+    await enqueueDbWrite(() => db.runAsync('UPDATE tasks SET skipped = ?, completed = 0 WHERE id = ?', skipping ? 1 : 0, targetId));
     const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
     setLocalTasks(refreshed);
     if (session?.user?.id) {
@@ -892,7 +938,9 @@ function AppShell({ session }: { session: any }) {
     bump();
   });
   const deleteTask = (task: Task) => safe(async () => {
-    await db.runAsync('DELETE FROM tasks WHERE id = ?', task.id);
+    const localMatch = localTasks.find(t => taskMatches(t, task));
+    const targetId = localMatch?.id ?? task.id;
+    await enqueueDbWrite(() => db.runAsync('DELETE FROM tasks WHERE id = ?', targetId));
     const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
     setLocalTasks(refreshed);
     if (session?.user?.id) {
@@ -902,9 +950,9 @@ function AppShell({ session }: { session: any }) {
     showToast('Task deleted', 'Undo', () => {
       setToast(null);
       safe(async () => {
-        await db.runAsync(
+        await enqueueDbWrite(() => db.runAsync(
           'INSERT INTO tasks(id, date, title, category, completed, skipped, sort_order, section, section_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          task.id, task.date, task.title, task.category, task.completed, task.skipped, task.sort_order, task.section, task.section_time);
+          targetId, task.date, task.title, task.category, task.completed, task.skipped, task.sort_order, task.section, task.section_time));
         const refreshedUndo = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
         setLocalTasks(refreshedUndo);
         bump();
@@ -914,10 +962,12 @@ function AppShell({ session }: { session: any }) {
 
   /* ── Reordering ── */
   const persistOrder = (groups: Group[]) => safe(async () => {
-    await db.withTransactionAsync(async () => {
+    await enqueueDbWrite(() => db.withTransactionAsync(async () => {
       let order = 0;
       for (const g of groups) for (const t of g.items) await db.runAsync('UPDATE tasks SET sort_order = ? WHERE id = ?', order++, t.id);
-    });
+    }));
+    const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
+    setLocalTasks(refreshed);
     bump();
   });
   const moveTask = (task: Task, dir: -1 | 1) => {
@@ -949,7 +999,7 @@ function AppShell({ session }: { session: any }) {
       if (!time) { Alert.alert('Check the time', 'Use a time like 11:00 AM or 14:30.'); return; }
     }
     const marks = sectionEdit.ids.map(() => '?').join(',');
-    await db.runAsync(`UPDATE tasks SET section = ?, section_time = ? WHERE id IN (${marks})`, name, time, ...sectionEdit.ids);
+    await enqueueDbWrite(() => db.runAsync(`UPDATE tasks SET section = ?, section_time = ? WHERE id IN (${marks})`, name, time, ...sectionEdit.ids));
     setSectionEdit(null); bump();
   });
 
@@ -996,9 +1046,10 @@ function AppShell({ session }: { session: any }) {
         await db.withTransactionAsync(async () => {
           for (let i = 0; i < template.tasks.length; i++) {
             const t = template.tasks[i];
+            const sectionName = (t.section || template.name || '').trim() || template.name;
             await db.runAsync(
               'INSERT INTO tasks(date, title, category, section, section_time, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
-              selectedDate, t.title, t.tag || 'General', t.section, t.section_time, offset + i);
+              selectedDate, t.title, t.tag || 'General', sectionName, t.section_time || null, offset + i);
           }
         });
         goTab('Today'); bump();
@@ -1026,8 +1077,21 @@ function AppShell({ session }: { session: any }) {
   const saveTemplate = async () => {
     const name = templateName.trim();
     if (!name) { Alert.alert('Name required', 'Give this routine a name.'); return; }
+    if (name.length > MAX_TEMPLATE_NAME) { Alert.alert('Routine name too long', `Keep it under ${MAX_TEMPLATE_NAME} characters.`); return; }
+    if (templateDescription.trim().length > MAX_TEMPLATE_DESCRIPTION) { Alert.alert('Description too long', `Keep it under ${MAX_TEMPLATE_DESCRIPTION} characters.`); return; }
+    if (templateText.trim().length > MAX_TEMPLATE_TEXT_LENGTH) { Alert.alert('Routine is too long', `Keep it under ${MAX_TEMPLATE_TEXT_LENGTH} characters.`); return; }
+    const lines = templateText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length > MAX_TEMPLATE_LINES) { Alert.alert('Too many lines', `Keep routines to ${MAX_TEMPLATE_LINES} lines or fewer.`); return; }
+    for (const line of lines) {
+      if (line.length > 140) { Alert.alert('A line is too long', 'Keep each task or section title shorter than 140 characters.'); return; }
+    }
     const items = parseTemplateText(templateText, name);
     if (!items.length) { Alert.alert('Add some tasks', 'One task per line. Start a section with:\n11:00 AM — Snack break'); return; }
+    for (const item of items) {
+      if ((item.title ?? '').trim().length > MAX_TASK_NAME) { Alert.alert('Task too long', `Each task should be under ${MAX_TASK_NAME} characters.`); return; }
+      if ((item.section ?? '').trim().length > MAX_SECTION_NAME) { Alert.alert('Section too long', `Keep section names under ${MAX_SECTION_NAME} characters.`); return; }
+      if ((item.tag ?? '').trim().length > MAX_TAG_NAME) { Alert.alert('Tag too long', `Keep tags under ${MAX_TAG_NAME} characters.`); return; }
+    }
     try {
       await db.withTransactionAsync(async () => {
         let templateId: number;
@@ -1041,9 +1105,10 @@ function AppShell({ session }: { session: any }) {
         }
         for (let i = 0; i < items.length; i++) {
           const it = items[i];
+          const sectionName = (it.section || name || '').trim() || name;
           await db.runAsync(
             'INSERT INTO template_tasks(template_id, title, category, sort_order, section, section_time) VALUES (?, ?, ?, ?, ?, ?)',
-            templateId, it.title, it.tag, i, it.section, it.section_time);
+            templateId, it.title, it.tag, i, sectionName, it.section_time);
         }
       });
       closeTemplateModal(); setTplVersion(v => v + 1);
@@ -1163,7 +1228,7 @@ function AppShell({ session }: { session: any }) {
                 <Pressable onPress={() => toggleTask(task)} style={[S.checkbox, task.completed ? S.checkboxDone : null, task.skipped ? S.checkboxSkipped : null]}>
                   <Text style={[S.checkboxMark, task.skipped ? { color: C.skipInk } : null]}>{task.completed ? '✓' : task.skipped ? '–' : ''}</Text>
                 </Pressable>
-                <Pressable style={S.taskMain} onPress={() => toggleTask(task)} onLongPress={() => openEdit(task)}>
+                <Pressable style={S.taskMain} onLongPress={() => openEdit(task)}>
                   <Text style={[S.taskTitle, task.completed ? S.taskComplete : null, task.skipped ? S.taskSkipped : null]}>{task.title}</Text>
                   {task.skipped ? <Text style={S.taskStatus}>Skipped for today</Text> : null}
                 </Pressable>
@@ -1319,7 +1384,6 @@ function AppShell({ session }: { session: any }) {
           </View>
         );
       })}
-      <Text style={S.footerNote}>History is stored on this device.</Text>
     </>
   );
 
@@ -1379,25 +1443,6 @@ function AppShell({ session }: { session: any }) {
           <View style={{ flex: 1 }} />
           <Pressable style={S.smallSave} onPress={savePresets}><Text style={S.smallSaveText}>Save</Text></Pressable>
         </View>
-      </View>
-      <View style={S.settingsCard}>
-        <Text style={S.cardTitle}>Your data stays local</Text>
-        <Text style={S.settingsBody}>Tasks, routines, water logs, notes and history are stored in the app's SQLite database on this device. There is no account, backend or analytics. Deleting the app may delete its local data, so add a backup option before relying on it long-term.</Text>
-      </View>
-      <View style={S.settingsCard}>
-        <Text style={S.cardTitle}>Supabase sync</Text>
-        <Text style={S.settingsBody}>{supabaseStatus || 'Checking connection…'}</Text>
-        <Text style={[S.muted, { marginTop: 8, color: lastSyncedAt ? C.green : C.muted }]}>
-          {lastSyncedAt ? `Last synced: ${lastSyncedAt}` : 'Last synced: never'}
-        </Text>
-        {remoteTodos.length ? (
-          <View style={{ marginTop: 12, gap: 6 }}>
-            {remoteTodos.slice(0, 4).map((item) => (
-              <Text key={String(item.id)} style={S.muted}>• {item.title}{item.completed ? ' ✓' : ''}</Text>
-            ))}
-          </View>
-        ) : null}
-        <Pressable style={[S.smallSave, { marginTop: 12 }]} onPress={() => syncChecklist(selectedDate)}><Text style={S.smallSaveText}>Sync checklist</Text></Pressable>
       </View>
     </>
   );
@@ -1771,7 +1816,7 @@ const makeStyles = (C: Palette) => StyleSheet.create({
   toastText: { color: C.toastInk, fontSize: 14, fontWeight: '600' },
   toastAction: { color: C.orange, fontSize: 14, fontWeight: '800', paddingLeft: 16 },
 
-  tabBar: { flexDirection: 'row', backgroundColor: C.bg, borderTopWidth: 1, borderTopColor: C.line, paddingTop: 10, paddingBottom: Platform.OS === 'ios' ? 8 : 12, paddingHorizontal: 10 },
+  tabBar: { flexDirection: 'row', backgroundColor: C.bg, borderTopWidth: 1, borderTopColor: C.line, paddingTop: 8, paddingBottom: 0, paddingHorizontal: 10, minHeight: 54 },
   tabItem: { flex: 1, alignItems: 'center', gap: 4, justifyContent: 'center', minHeight: 52 },
   tabIcon: { fontSize: 20, color: C.icon, height: 23 },
   tabIconActive: { color: C.green },
