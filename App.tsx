@@ -1,12 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Animated, Appearance, Image, ImageBackground, Keyboard, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, SafeAreaView,
+  Alert, Animated, Appearance, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, SafeAreaView,
   ScrollView, StatusBar, StyleSheet, Text, TextInput, View, useColorScheme,
 } from 'react-native';
-import Svg, { Path } from 'react-native-svg';
 import { SQLiteProvider, useSQLiteContext, type SQLiteDatabase } from 'expo-sqlite';
-import { supabase } from './utils/supabase';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import * as DocumentPicker from 'expo-document-picker';
+import * as Notifications from 'expo-notifications';
 // Loaded defensively: if the native module isn't in this build, the app still runs (haptics just stay off).
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 const Haptics = (() => {
   try { return require('expo-haptics') as typeof import('expo-haptics'); } catch { return null; }
 })();
@@ -60,43 +71,6 @@ const MAX_TEMPLATE_NAME = 60;
 const MAX_TEMPLATE_DESCRIPTION = 180;
 const MAX_TEMPLATE_TEXT_LENGTH = 4000;
 const MAX_TEMPLATE_LINES = 30;
-
-const EmailIcon = ({ color = '#7A7F7A' }: { color?: string }) => (
-  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9Z" />
-    <Path d="M4.5 8 12 13l7.5-5" />
-  </Svg>
-);
-
-const MailBadgeIcon = ({ color = '#FFFFFF' }: { color?: string }) => (
-  <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.1} strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9Z" />
-    <Path d="M4.5 8 12 13l7.5-5" />
-  </Svg>
-);
-
-const LockIcon = ({ color = '#7A7F7A' }: { color?: string }) => (
-  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M7 10V8a5 5 0 0 1 10 0v2" />
-    <Path d="M7 10h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2Z" />
-  </Svg>
-);
-
-const EyeIcon = ({ color = '#7A7F7A' }: { color?: string }) => (
-  <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
-    <Path d="M12 14.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" />
-  </Svg>
-);
-
-const EyeOffIcon = ({ color = '#7A7F7A' }: { color?: string }) => (
-  <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M3 3l18 18" />
-    <Path d="M10.6 10.6A2.5 2.5 0 0 0 13.4 13.4" />
-    <Path d="M9.1 5.7A11.4 11.4 0 0 1 12 5.5c6.5 0 10 6.5 10 6.5a17.5 17.5 0 0 1-4.4 5.5" />
-    <Path d="M6.2 6.2A17.8 17.8 0 0 0 2 12s3.5 6.5 10 6.5a10.5 10.5 0 0 0 5.9-1.8" />
-  </Svg>
-);
 
 /* ───────────── Date + time helpers ───────────── */
 const dateKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -230,7 +204,7 @@ async function initialise(db: SQLiteDatabase) {
   await db.execAsync('CREATE INDEX IF NOT EXISTS water_date_idx ON water_entries(date);');
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS templates (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT ''
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0
     );
   `);
   await db.execAsync(`
@@ -245,6 +219,8 @@ async function initialise(db: SQLiteDatabase) {
   await db.execAsync('CREATE TABLE IF NOT EXISTS day_notes (date TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT \'\');');
 
   // ── Migrate databases created by older versions (each ALTER only succeeds once) ──
+  try { await db.execAsync('ALTER TABLE templates ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0'); } catch {}
+  try { await db.execAsync('UPDATE templates SET sort_order = id WHERE sort_order = 0'); } catch {}
   let tasksMigrated = false;
   try { await db.execAsync('ALTER TABLE tasks ADD COLUMN section TEXT DEFAULT NULL'); tasksMigrated = true; } catch {}
   try { await db.execAsync('ALTER TABLE tasks ADD COLUMN section_time TEXT DEFAULT NULL'); } catch {}
@@ -266,7 +242,7 @@ async function initialise(db: SQLiteDatabase) {
   if (!count?.count) {
     await db.withTransactionAsync(async () => {
       for (const t of SEED_TEMPLATES) {
-        const result = await db.runAsync('INSERT INTO templates(name, description) VALUES (?, ?)', t.name, t.description);
+        const result = await db.runAsync('INSERT INTO templates(name, description, sort_order) VALUES (?, ?, ?)', t.name, t.description, SEED_TEMPLATES.indexOf(t));
         for (let i = 0; i < t.tasks.length; i++) {
           const k = t.tasks[i];
           await db.runAsync(
@@ -358,142 +334,9 @@ function SwipeRow({ C, last, onRight, onLeft, children }: {
 }
 
 /* ───────────── App ───────────── */
-function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: any) => void }) {
-  const scheme = useColorScheme();
-  const isDark = scheme === 'dark';
-  const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [keepSignedIn, setKeepSignedIn] = useState(true);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const imageSource = isDark ? require('./assets/icon-dark-preview.png') : require('./assets/icon-preview.png');
-
-  const submit = async () => {
-    if (!email || !password) {
-      setError('Enter both email and password.');
-      return;
-    }
-    setLoading(true); setError('');
-    try {
-      const action = mode === 'sign-in'
-        ? supabase.auth.signInWithPassword({ email, password })
-        : supabase.auth.signUp({ email, password });
-      const { data, error: authError } = await action;
-      if (authError) throw authError;
-
-      if (mode === 'sign-up') {
-        if (!data.session) {
-          Alert.alert('Check your email', 'Your account was created. Confirm the email we sent you, then sign in below.', [
-            { text: 'OK', onPress: () => { setMode('sign-in'); setPassword(''); } },
-          ]);
-          setEmail('');
-          setPassword('');
-          return;
-        }
-      }
-
-      if (data.session) onAuthenticated(data.session);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Authentication failed.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleForgotPassword = async () => {
-    if (!email.trim()) {
-      Alert.alert('Add your email', 'Enter your email address first so we can send a reset link.');
-      return;
-    }
-
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: 'daily-routine://reset-password',
-      });
-      if (error) throw error;
-      Alert.alert('Check your email', 'We sent a password reset link to your inbox.');
-    } catch (e) {
-      Alert.alert('Could not send reset email', e instanceof Error ? e.message : 'Please try again.');
-    }
-  };
-
-  return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: isDark ? '#121512' : '#F6F5F1' }}>
-      <ImageBackground source={require('./assets/bg.png')} style={{ flex: 1, width: '100%', height: '100%' }} resizeMode="cover">
-        <Pressable style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 12 }} onPress={Keyboard.dismiss}>
-          <View style={{ width: '100%', maxWidth: 420, alignItems: 'center' }}>
-          <View style={{ width: 150, height: 96, alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
-            <Image source={imageSource} style={{ width: 128, height: 128, resizeMode: 'contain' }} />
-          </View>
-
-          <Text style={{ fontSize: 24, lineHeight: 34, letterSpacing: -1.2,marginBottom: 4,marginTop: 4, fontWeight: '800', color: isDark ? '#F0F1EE' : '#20251F', textAlign: 'center' }}>Daily Routine</Text>
-          <Text style={{ fontSize: 14, fontWeight: '500', color: isDark ? '#D6D9D2' : '#5B645F', textAlign: 'center', marginTop: 4, marginBottom: 18 }}>Build better days, one checklist at a time.</Text>
-
-          <View style={{ width: '100%', flexDirection: 'row', backgroundColor: isDark ? '#292D28' : '#E5E9E1', borderRadius: 18, padding: 6, marginBottom: 18 }}>
-            <Pressable style={[{ flex: 1, borderRadius: 14, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' }, mode === 'sign-in' ? { backgroundColor: isDark ? '#2E5A43' : '#3B6A4F' } : { backgroundColor: 'transparent' }]} onPress={() => setMode('sign-in')}>
-              <Text style={{ fontSize: 14, fontWeight: '800', color: mode === 'sign-in' ? '#FFFFFF' : isDark ? '#F0F1EE' : '#2A362F' }}>Sign In</Text>
-            </Pressable>
-            <Pressable style={[{ flex: 1, borderRadius: 14, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' }, mode === 'sign-up' ? { backgroundColor: isDark ? '#EAEDE8' : '#F5F7F2' } : { backgroundColor: 'transparent' }]} onPress={() => setMode('sign-up')}>
-              <Text style={{ fontSize: 14, fontWeight: '800', color: mode === 'sign-up' ? (isDark ? '#1A1E1A' : '#1E2B26') : (isDark ? '#E7E9E4' : '#2A362F') }}>Create Account</Text>
-            </Pressable>
-          </View>
-
-          <View style={{ width: '100%' }}>
-            <Text style={{ fontSize: 12, fontWeight: '700', color: isDark ? '#D9DDD6' : '#5B645F', marginBottom: 8 }}>Email</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: isDark ? '#40463F' : '#D7DCD4', backgroundColor: isDark ? '#171A16' : '#F7F8F5', paddingHorizontal: 12, marginBottom: 14 }}>
-              <View style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center', marginRight: 10 }}><EmailIcon color={isDark ? '#C4C8C2' : '#7A7F7A'} /></View>
-              <TextInput value={email} onChangeText={setEmail} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" placeholder="you@example.com" placeholderTextColor={isDark ? '#889286' : '#8F978F'} style={{ flex: 1, height: 48, color: isDark ? '#F1F1EE' : '#1F261F', fontSize: 16 }} />
-            </View>
-
-            <Text style={{ fontSize: 12, fontWeight: '700', color: isDark ? '#D9DDD6' : '#5B645F', marginBottom: 8 }}>Password</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: isDark ? '#40463F' : '#D7DCD4', backgroundColor: isDark ? '#171A16' : '#F7F8F5', paddingHorizontal: 12, marginBottom: 12 }}>
-              <View style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center', marginRight: 10 }}><LockIcon color={isDark ? '#C4C8C2' : '#7A7F7A'} /></View>
-              <TextInput value={password} onChangeText={setPassword} secureTextEntry={!showPassword} placeholder="Password" placeholderTextColor={isDark ? '#889286' : '#8F978F'} style={{ flex: 1, height: 48, color: isDark ? '#F1F1EE' : '#1F261F', fontSize: 16 }} />
-              <Pressable onPress={() => setShowPassword((v) => !v)} style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center', padding: 0 }}>
-                {showPassword ? <EyeOffIcon color={isDark ? '#D0D5CD' : '#636A63'} /> : <EyeIcon color={isDark ? '#D0D5CD' : '#636A63'} />}
-              </Pressable>
-            </View>
-
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-              <Pressable style={{ flexDirection: 'row', alignItems: 'center' }} onPress={() => setKeepSignedIn((v) => !v)}>
-                <View style={{ width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: isDark ? '#7F8B80' : '#7D8C81', backgroundColor: keepSignedIn ? (isDark ? '#3D6F51' : '#3A7857') : 'transparent', alignItems: 'center', justifyContent: 'center', marginRight: 8 }}>
-                  {keepSignedIn ? <Text style={{ fontSize: 11, color: '#FFFFFF' }}>✓</Text> : null}
-                </View>
-                <Text style={{ fontSize: 13, color: isDark ? '#F3F4F0' : '#262E2A', fontWeight: '600' }}>Keep me signed in</Text>
-              </Pressable>
-              <Pressable onPress={handleForgotPassword}>
-                <Text style={{ fontSize: 13, color: isDark ? '#DCE6E0' : '#374B42', fontWeight: '600' }}>Forgot password?</Text>
-              </Pressable>
-            </View>
-
-            {error ? <Text style={{ color: '#B94D42', fontSize: 12, marginBottom: 12 }}>{error}</Text> : null}
-
-            <Pressable style={{ backgroundColor: isDark ? '#365E46' : '#315D40', borderRadius: 16, paddingVertical: 15, alignItems: 'center', marginBottom: 16 }} onPress={submit} disabled={loading}>
-              <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '800' }}>{loading ? 'Please wait...' : mode === 'sign-in' ? 'Sign in' : 'Create account'}  →</Text>
-            </Pressable>
-
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
-              <View style={{ flex: 1, height: 1, backgroundColor: isDark ? '#3A4039' : '#D8DDD6' }} />
-              <Text style={{ marginHorizontal: 10, color: isDark ? '#A7ACA6' : '#7D847E', fontWeight: '600', fontSize: 11 }}>or continue with</Text>
-              <View style={{ flex: 1, height: 1, backgroundColor: isDark ? '#3A4039' : '#D8DDD6' }} />
-            </View>
-
-            <Pressable style={{ borderWidth: 1, borderColor: isDark ? '#3E443F' : '#D8DDD6', backgroundColor: isDark ? '#161915' : '#F7F8F5', borderRadius: 16, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ fontSize: 16, fontWeight: '700', color: isDark ? '#F1F3EF' : '#1E2B26' }}> Continue with Apple</Text>
-            </Pressable>
-          </View>
-          </View>
-        </Pressable>
-      </ImageBackground>
-    </SafeAreaView>
-  );
-}
-
-function AppShell({ session }: { session: any }) {
+function AppShell() {
   const db = useSQLiteContext();
+  const session: any = null; // Offline-first build: no account or remote sync.
   const systemScheme = useColorScheme() ?? 'light';
   const [deviceScheme, setDeviceScheme] = useState<NonNullable<ReturnType<typeof useColorScheme>>>(() => Appearance.getColorScheme() ?? 'light');
   useEffect(() => {
@@ -554,6 +397,9 @@ function AppShell({ session }: { session: any }) {
   const [templateName, setTemplateName] = useState('');
   const [templateDescription, setTemplateDescription] = useState('');
   const [templateText, setTemplateText] = useState('');
+  const [remindersEnabled, setRemindersEnabled] = useState(false);
+  const [reminderTime, setReminderTime] = useState('9:00 AM');
+  const [backupBusy, setBackupBusy] = useState(false);
 
   // toast (undo)
   const [toast, setToast] = useState<{ message: string; label?: string; onPress?: () => void } | null>(null);
@@ -570,62 +416,16 @@ function AppShell({ session }: { session: any }) {
     toastTimer.current = setTimeout(() => setToast(null), 5000);
   };
 
-  const syncChecklist = useCallback(async (date = selectedDate) => {
-    if (!session?.user?.id) {
-      setSupabaseStatus('Sign in to sync to Supabase.');
-      setRemoteTodos([]);
-      return;
-    }
-
-    try {
-      setSupabaseStatus('Syncing checklist with Supabase...');
-      const { data, error } = await supabase
-        .from('todos')
-        .select('*')
-        .eq('user_id', session.user.id)
-        .eq('date', date)
-        .order('updated_at', { ascending: false });
-
-      if (error) throw error;
-
-      const rows = (data ?? []).map((item: any) => ({
-        id: Number(item.id),
-        title: item.title ?? item.name ?? 'Untitled task',
-        completed: Boolean(item.completed),
-        date: item.date ?? todayKey(),
-        user_id: item.user_id ?? session.user.id,
-        section: item.section ?? null,
-        section_time: item.section_time ?? null,
-        sort_order: Number(item.sort_order ?? 0),
-        category: item.category ?? 'General',
-        skipped: Boolean(item.skipped),
-      }));
-
-      setRemoteTodos(rows);
-      setRemoteTasks(rows.map((item: any) => ({
-        id: Number(item.id),
-        date: item.date ?? todayKey(),
-        title: item.title ?? item.name ?? 'Untitled task',
-        category: item.category ?? 'General',
-        section: item.section ?? null,
-        section_time: item.section_time ?? null,
-        completed: item.completed ? 1 : 0,
-        skipped: item.skipped ? 1 : 0,
-        sort_order: item.sort_order ?? 0,
-      })));
-      const stamp = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-      setLastSyncedAt(stamp);
-      setSupabaseStatus(rows.length ? `Supabase synced (${rows.length} remote task${rows.length === 1 ? '' : 's'})` : 'Supabase connected, no tasks yet');
-    } catch (error) {
-      setSupabaseStatus(`Supabase unavailable: ${error instanceof Error ? error.message : 'unknown error'}`);
-    }
-  }, [session]);
+  const syncChecklist = useCallback(async (_date?: string) => {
+    setSupabaseStatus('Offline-first · saved on this iPhone');
+    setRemoteTodos([]);
+    setRemoteTasks([]);
+  }, []);
 
   useEffect(() => {
-    if (session?.user?.id) {
-      syncChecklist(selectedDate);
-    }
-  }, [session, selectedDate, syncChecklist]);
+    // Local SQLite is the source of truth. This intentionally performs no network requests.
+    syncChecklist(selectedDate);
+  }, [selectedDate, syncChecklist]);
 
   const dateRef = useRef(selectedDate);
   dateRef.current = selectedDate;
@@ -651,6 +451,8 @@ function AppShell({ session }: { session: any }) {
       const list = p.length ? p : DEFAULT_PRESETS;
       setPresets(list); setPresetInput(list.join(', '));
       setThemePref((['system', 'light', 'dark'].includes(s.theme) ? s.theme : 'system') as ThemePref);
+      setRemindersEnabled(s.reminders_enabled === '1');
+      setReminderTime(s.reminder_time || '9:00 AM');
     })().catch(e => Alert.alert('Database error', String(e)));
   }, [db]);
 
@@ -679,7 +481,7 @@ function AppShell({ session }: { session: any }) {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const rows = await db.getAllAsync<{ id: number; name: string; description: string }>('SELECT id, name, description FROM templates ORDER BY id');
+      const rows = await db.getAllAsync<{ id: number; name: string; description: string }>('SELECT id, name, description FROM templates ORDER BY sort_order, id');
       const tt = await db.getAllAsync<{ template_id: number; title: string; category: string; section: string | null; section_time: string | null }>(
         'SELECT template_id, title, category, section, section_time FROM template_tasks ORDER BY template_id, sort_order, id');
       const byTemplate = new Map<number, TemplateTask[]>();
@@ -864,45 +666,10 @@ function AppShell({ session }: { session: any }) {
     setTaskTag(task.category === 'General' ? '' : task.category);
     setTaskSection(task.section || ''); setTaskTime(task.section_time || ''); setTaskModal(true);
   };
-  const pushLocalTasksToSupabase = useCallback(async (overrideTasks?: Task[], date: string = selectedDate) => {
-    if (!session?.user?.id) return;
-    const source = overrideTasks ?? localTasks;
-    // Always clear the day being edited, even when no local tasks are left.
-    const dates = Array.from(new Set([date, ...source.map(task => task.date).filter(Boolean)]));
-
-    for (const d of dates) {
-      const { error: deleteError } = await supabase
-        .from('todos')
-        .delete()
-        .eq('user_id', session.user.id)
-        .eq('date', d);
-
-      if (deleteError) throw deleteError;
-    }
-
-    const rows = source.map((task) => ({
-      user_id: session.user.id,
-      title: task.title,
-      date: task.date,
-      category: task.category || 'General',
-      section: task.section || null,
-      section_time: task.section_time || null,
-      completed: Boolean(task.completed),
-      skipped: Boolean(task.skipped),
-      sort_order: Number(task.sort_order ?? 0),
-      updated_at: new Date().toISOString(),
-    }));
-
-    if (!rows.length) {
-      await syncChecklist(selectedDate);
-      return;
-    }
-
-    const { error } = await supabase.from('todos').insert(rows);
-
-    if (error) throw error;
-    await syncChecklist(selectedDate);
-  }, [localTasks, selectedDate, session, syncChecklist]);
+  const pushLocalTasksToSupabase = useCallback(async (_overrideTasks?: Task[], _date: string = selectedDate) => {
+    // Kept as a no-op adapter so older local mutation flows remain compatible; no cloud sync occurs.
+    return;
+  }, [selectedDate]);
 
   const saveTask = () => safe(async () => {
     const title = taskTitle.trim();
@@ -1161,6 +928,36 @@ function AppShell({ session }: { session: any }) {
     setTemplateModal(true);
   };
   const closeTemplateModal = () => { setTemplateModal(false); setEditingTemplate(null); };
+  const duplicateTemplate = (template: Template) => safe(async () => {
+    const baseName = `${template.name} copy`.slice(0, MAX_TEMPLATE_NAME);
+    let name = baseName;
+    let suffix = 2;
+    while (await db.getFirstAsync<{ id: number }>('SELECT id FROM templates WHERE name = ?', name)) {
+      const tail = ` ${suffix++}`;
+      name = `${baseName.slice(0, MAX_TEMPLATE_NAME - tail.length)}${tail}`;
+    }
+    const count = await db.getFirstAsync<{ n: number }>('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM templates');
+    const result = await db.runAsync('INSERT INTO templates(name, description, sort_order) VALUES (?, ?, ?)', name, template.description, count?.n ?? templates.length);
+    const newId = Number(result.lastInsertRowId);
+    for (let i = 0; i < template.tasks.length; i++) {
+      const t = template.tasks[i];
+      await db.runAsync('INSERT INTO template_tasks(template_id, title, category, sort_order, section, section_time) VALUES (?, ?, ?, ?, ?, ?)', newId, t.title, t.tag || 'General', i, t.section, t.section_time);
+    }
+    setTplVersion(v => v + 1);
+    showToast('Routine duplicated');
+  });
+  const moveTemplate = (template: Template, direction: -1 | 1) => safe(async () => {
+    const currentIndex = templates.findIndex(t => t.id === template.id);
+    const nextIndex = currentIndex + direction;
+    if (nextIndex < 0 || nextIndex >= templates.length) return;
+    const reordered = [...templates];
+    [reordered[currentIndex], reordered[nextIndex]] = [reordered[nextIndex], reordered[currentIndex]];
+    await db.withTransactionAsync(async () => {
+      for (let i = 0; i < reordered.length; i++) await db.runAsync('UPDATE templates SET sort_order = ? WHERE id = ?', i + 1, reordered[i].id);
+    });
+    setTplVersion(v => v + 1);
+  });
+
   const saveTemplate = async () => {
     const name = templateName.trim();
     if (!name) { Alert.alert('Name required', 'Give this routine a name.'); return; }
@@ -1187,7 +984,8 @@ function AppShell({ session }: { session: any }) {
           await db.runAsync('UPDATE templates SET name = ?, description = ? WHERE id = ?', name, templateDescription.trim(), templateId);
           await db.runAsync('DELETE FROM template_tasks WHERE template_id = ?', templateId);
         } else {
-          const result = await db.runAsync('INSERT INTO templates(name, description) VALUES (?, ?)', name, templateDescription.trim());
+          const order = await db.getFirstAsync<{ n: number }>('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM templates');
+          const result = await db.runAsync('INSERT INTO templates(name, description, sort_order) VALUES (?, ?, ?)', name, templateDescription.trim(), order?.n ?? templates.length);
           templateId = result.lastInsertRowId;
         }
         for (let i = 0; i < items.length; i++) {
@@ -1203,6 +1001,94 @@ function AppShell({ session }: { session: any }) {
       if (String(e).includes('UNIQUE')) Alert.alert('Routine name already used', 'Choose a different name for this routine.');
       else Alert.alert('Could not save routine', String(e));
     }
+  };
+
+  /* ── Local JSON backup / restore ── */
+  const exportBackup = async () => {
+    setBackupBusy(true);
+    try {
+      const backup = {
+        app: 'Daily Routine', schemaVersion: 1, exportedAt: new Date().toISOString(),
+        tables: {
+          tasks: await db.getAllAsync<any>('SELECT * FROM tasks ORDER BY date, sort_order, id'),
+          water_entries: await db.getAllAsync<any>('SELECT * FROM water_entries ORDER BY date, id'),
+          templates: await db.getAllAsync<any>('SELECT * FROM templates ORDER BY sort_order, id'),
+          template_tasks: await db.getAllAsync<any>('SELECT * FROM template_tasks ORDER BY template_id, sort_order, id'),
+          settings: await db.getAllAsync<any>('SELECT * FROM settings ORDER BY key'),
+          day_notes: await db.getAllAsync<any>('SELECT * FROM day_notes ORDER BY date'),
+        },
+      };
+      const uri = `${FileSystem.cacheDirectory}daily-routine-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      await FileSystem.writeAsStringAsync(uri, JSON.stringify(backup, null, 2), { encoding: FileSystem.EncodingType.UTF8 });
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri, { mimeType: 'application/json', dialogTitle: 'Export Daily Routine backup' });
+      else Alert.alert('Backup created', `File saved to ${uri}`);
+    } catch (e) { Alert.alert('Export failed', e instanceof Error ? e.message : String(e)); }
+    finally { setBackupBusy(false); }
+  };
+
+  const importBackup = async () => {
+    const picked = await DocumentPicker.getDocumentAsync({ type: ['application/json', 'text/json', 'public.json'], copyToCacheDirectory: true, multiple: false });
+    if (picked.canceled || !picked.assets?.[0]?.uri) return;
+    setBackupBusy(true);
+    try {
+      const raw = await FileSystem.readAsStringAsync(picked.assets[0].uri, { encoding: FileSystem.EncodingType.UTF8 });
+      const parsed = JSON.parse(raw);
+      const required = ['tasks', 'water_entries', 'templates', 'template_tasks', 'settings', 'day_notes'];
+      if (parsed?.app !== 'Daily Routine' || parsed?.schemaVersion !== 1 || !parsed?.tables || required.some(k => !Array.isArray(parsed.tables[k]))) {
+        throw new Error('This is not a supported Daily Routine backup file.');
+      }
+      const columns: Record<string, string[]> = {
+        tasks: ['id','date','title','category','completed','skipped','sort_order','section','section_time','created_at'],
+        water_entries: ['id','date','amount_ml','created_at'],
+        templates: ['id','name','description','sort_order'],
+        template_tasks: ['id','template_id','title','category','sort_order','section','section_time'],
+        settings: ['key','value'], day_notes: ['date','note'],
+      };
+      for (const table of required) {
+        if (parsed.tables[table].some((row: any) => !row || typeof row !== 'object' || Array.isArray(row))) throw new Error(`Invalid ${table} data.`);
+        if (parsed.tables[table].length > 100000) throw new Error('Backup is unexpectedly large.');
+      }
+      Alert.alert('Replace local data?', 'Import replaces all current tasks, routines, water entries, settings, and notes. Export a backup first if you may need the current data.', [
+        { text: 'Cancel', style: 'cancel', onPress: () => setBackupBusy(false) },
+        { text: 'Replace and import', style: 'destructive', onPress: () => safe(async () => {
+          try {
+            await db.withTransactionAsync(async () => {
+              for (const table of ['template_tasks','templates','tasks','water_entries','settings','day_notes']) await db.runAsync(`DELETE FROM ${table}`);
+              for (const table of ['templates','tasks','water_entries','settings','day_notes','template_tasks']) {
+                for (const row of parsed.tables[table]) {
+                  const keys = columns[table].filter(k => Object.prototype.hasOwnProperty.call(row, k));
+                  if (!keys.length) continue;
+                  const placeholders = keys.map(() => '?').join(',');
+                  await db.runAsync(`INSERT INTO ${table} (${keys.join(',')}) VALUES (${placeholders})`, ...keys.map(k => row[k] ?? null));
+                }
+              }
+            });
+            setTplVersion(v => v + 1); bump();
+            Alert.alert('Backup restored', 'Your local data has been imported.');
+          } finally { setBackupBusy(false); }
+        }) },
+      ]);
+    } catch (e) { setBackupBusy(false); Alert.alert('Import failed', e instanceof Error ? e.message : String(e)); }
+  };
+
+  const configureReminder = async (enabled: boolean) => {
+    const clock = parseClock(reminderTime);
+    if (enabled && !clock) { Alert.alert('Check reminder time', 'Use a time such as 9:00 AM or 18:30.'); return; }
+    try {
+      await Notifications.cancelAllScheduledNotificationsAsync();
+      if (enabled) {
+        const permission = await Notifications.requestPermissionsAsync();
+        if (!permission.granted) { Alert.alert('Notifications disabled', 'Allow notifications in iPhone Settings to use daily reminders.'); return; }
+        await Notifications.scheduleNotificationAsync({
+          content: { title: 'A fresh start', body: 'Take a moment to check in with your Daily Routine.', sound: true },
+          trigger: { hour: clock!.h, minute: clock!.m, repeats: true } as any,
+        });
+      }
+      setRemindersEnabled(enabled);
+      await setSetting('reminders_enabled', enabled ? '1' : '0');
+      await setSetting('reminder_time', normalizeClock(reminderTime) || reminderTime);
+      Alert.alert(enabled ? 'Daily reminder enabled' : 'Daily reminder disabled', enabled ? `You’ll receive a local reminder at ${normalizeClock(reminderTime)}.` : 'No daily reminder is scheduled.');
+    } catch (e) { Alert.alert('Reminder update failed', e instanceof Error ? e.message : String(e)); }
   };
 
   /* ── Settings ── */
@@ -1359,8 +1245,17 @@ function AppShell({ session }: { session: any }) {
         return (
           <View style={S.templateCard} key={t.id}>
             <View style={S.rowBetween}>
-              <View style={{ flex: 1, paddingRight: 8 }}>
-                <Text style={S.templateName}>{t.name}</Text>
+              <Text style={S.templateName}>{t.name}</Text>
+              <View style={S.inlineActions}>
+                <Pressable accessibilityLabel={`Move ${t.name} up`} style={S.inlineAction} onPress={() => moveTemplate(t, -1)}><Text style={S.inlineActionText}>▲</Text></Pressable>
+                <Pressable accessibilityLabel={`Move ${t.name} down`} style={S.inlineAction} onPress={() => moveTemplate(t, 1)}><Text style={S.inlineActionText}>▼</Text></Pressable>
+                <Pressable style={S.inlineAction} onPress={() => duplicateTemplate(t)}><Text style={S.inlineActionText}>⧉</Text></Pressable>
+                <Pressable style={S.inlineAction} onPress={() => openTemplateEditor(t)}><Text style={S.inlineActionText}>✎</Text></Pressable>
+                <Pressable style={S.inlineActionDanger} onPress={() => deleteTemplate(t)}><Text style={S.inlineActionTextDanger}>⌫</Text></Pressable>
+              </View>
+            </View>
+            <View style={S.rowBetween}>
+              <View style={{ flex: 1, paddingRight: 10 }}>
                 <Text style={S.templateDescription}>{t.description || 'Your custom reusable routine.'}</Text>
                 <Text style={S.templateModeLabel}>{sections.length} {sections.length === 1 ? 'section' : 'sections'}</Text>
               </View>
@@ -1375,15 +1270,9 @@ function AppShell({ session }: { session: any }) {
               ))}
               {t.tasks.length > 4 ? <Text style={S.muted}>+{t.tasks.length - 4} more</Text> : null}
             </View>
-            <View style={S.rowBetween}>
-              <Pressable style={[S.secondaryButton, { flex: 1, marginBottom: 0, marginRight: 10 }]} onPress={() => applyTemplate(t)}>
-                <Text style={S.secondaryButtonText}>Add to {shortDate(selectedDate)}</Text>
-              </Pressable>
-              <View style={S.inlineActions}>
-                <Pressable style={S.inlineAction} onPress={() => openTemplateEditor(t)}><Text style={S.inlineActionText}>Edit</Text></Pressable>
-                <Pressable style={S.inlineActionDanger} onPress={() => deleteTemplate(t)}><Text style={S.inlineActionTextDanger}>Delete</Text></Pressable>
-              </View>
-            </View>
+            <Pressable style={[S.secondaryButton, { marginBottom: 0 }]} onPress={() => applyTemplate(t)}>
+              <Text style={S.secondaryButtonText}>Add to {shortDate(selectedDate)}</Text>
+            </Pressable>
           </View>
         );
       })}
@@ -1481,28 +1370,8 @@ function AppShell({ session }: { session: any }) {
     <>
       {header('Settings')}
       <View style={S.settingsCard}>
-        <Text style={S.cardTitle}>Account</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10, marginBottom: 12 }}>
-          <View style={{ width: 26, height: 26, borderRadius: 8, backgroundColor: '#F1C9CD', alignItems: 'center', justifyContent: 'center', marginRight: 10 }}>
-            <MailBadgeIcon color="#FFFFFF" />
-          </View>
-          <Text style={{ fontSize: 15, fontWeight: '600', color: C.ink, flexShrink: 1 }} numberOfLines={1}>
-            {session?.user?.email || 'Signed in'}
-          </Text>
-        </View>
-        <Pressable
-          style={[S.smallSave, { backgroundColor: C.red, marginTop: 4 }]}
-          onPress={async () => {
-            try {
-              await supabase.auth.signOut();
-              Alert.alert('Signed out', 'You have been logged out.');
-            } catch (e) {
-              Alert.alert('Logout failed', e instanceof Error ? e.message : 'Please try again.');
-            }
-          }}
-        >
-          <Text style={[S.smallSaveText, { color: '#FFFFFF' }]}>Logout</Text>
-        </Pressable>
+        <Text style={S.cardTitle}>Private by design</Text>
+        <Text style={S.settingsBody}>Your routines, checklist, notes, and water entries are stored on this iPhone. No account is required to use the app.</Text>
       </View>
       <View style={S.settingsCard}>
         <Text style={S.cardTitle}>Appearance</Text>
@@ -1531,6 +1400,22 @@ function AppShell({ session }: { session: any }) {
           <View style={{ flex: 1 }} />
           <Pressable style={S.smallSave} onPress={savePresets}><Text style={S.smallSaveText}>Save</Text></Pressable>
         </View>
+      </View>
+      <View style={S.settingsCard}>
+        <Text style={S.cardTitle}>Daily reminder</Text>
+        <Text style={S.settingsBody}>An optional on-device notification. It does not need an account or server.</Text>
+        <View style={S.goalRow}>
+          <TextInput value={reminderTime} onChangeText={setReminderTime} style={[S.goalInput, { width: 125 }]} placeholder="9:00 AM" placeholderTextColor={C.placeholder} accessibilityLabel="Daily reminder time" />
+          <View style={{ flex: 1 }} />
+          <Pressable style={S.smallSave} onPress={() => configureReminder(!remindersEnabled)}><Text style={S.smallSaveText}>{remindersEnabled ? 'Turn off' : 'Enable'}</Text></Pressable>
+        </View>
+        {remindersEnabled ? <Text style={[S.muted, { marginTop: 8 }]}>Enabled · {normalizeClock(reminderTime) || reminderTime}</Text> : null}
+      </View>
+      <View style={S.settingsCard}>
+        <Text style={S.cardTitle}>Backup & restore</Text>
+        <Text style={S.settingsBody}>Export a JSON backup before changing phones or reinstalling the app. Import replaces the data currently stored on this iPhone.</Text>
+        <Pressable style={[S.primaryButtonWide, { marginTop: 14, marginBottom: 8 }]} disabled={backupBusy} onPress={exportBackup}><Text style={S.primaryButtonText}>{backupBusy ? 'Working…' : 'Export JSON backup'}</Text></Pressable>
+        <Pressable style={S.secondaryButton} disabled={backupBusy} onPress={importBackup}><Text style={S.secondaryButtonText}>Import JSON backup</Text></Pressable>
       </View>
     </>
   );
@@ -1708,51 +1593,11 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
 }
 
 export default function App() {
-  const [session, setSession] = useState<any>(null);
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-
-    const boot = async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!active) return;
-      setSession(data.session ?? null);
-      setReady(true);
-    };
-
-    boot();
-
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      if (active) {
-        setSession(nextSession ?? null);
-        setReady(true);
-      }
-    });
-
-    return () => {
-      active = false;
-      authListener.subscription.unsubscribe();
-    };
-  }, []);
-
-  if (!ready) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F6F5F1' }}>
-        <Text style={{ fontSize: 16, fontWeight: '700', color: '#20251F' }}>Loading…</Text>
-      </View>
-    );
-  }
-
-  if (!session) {
-    return <AuthScreen onAuthenticated={setSession} />;
-  }
-
   return (
     <ErrorBoundary>
-      <React.Suspense fallback={<View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF' }}><Text>Loading database…</Text></View>}>
+      <React.Suspense fallback={<View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F6F5F1' }}><Text style={{ color: '#20251F' }}>Loading your local routine…</Text></View>}>
         <SQLiteProvider databaseName="daily-routine.db" onInit={initialise} useSuspense>
-          <AppShell session={session} />
+          <AppShell />
         </SQLiteProvider>
       </React.Suspense>
     </ErrorBoundary>
@@ -1763,7 +1608,7 @@ export default function App() {
 const makeStyles = (C: Palette) => StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.bg },
   appBody: { flex: 1, backgroundColor: C.bg },
-  scroll: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 30 },
+  scroll: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 34 },
 
   pageHeader: { marginBottom: 18 },
   eyebrow: { color: C.green, fontSize: 10, letterSpacing: 2, fontWeight: '800', marginBottom: 8 },
@@ -1812,7 +1657,7 @@ const makeStyles = (C: Palette) => StyleSheet.create({
   toolText: { color: C.muted, fontSize: 14 },
   toolDisabled: { opacity: 0.25 },
   taskRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 13, gap: 11, backgroundColor: C.card },
-  checkbox: { width: 24, height: 24, borderRadius: 8, borderWidth: 1.5, borderColor: C.line, alignItems: 'center', justifyContent: 'center' },
+  checkbox: { width: 28, height: 28, borderRadius: 9, borderWidth: 1.5, borderColor: C.line, alignItems: 'center', justifyContent: 'center' },
   checkboxDone: { backgroundColor: C.green, borderColor: C.green },
   checkboxSkipped: { backgroundColor: C.skipBg, borderColor: C.skipBorder },
   checkboxMark: { fontSize: 15, fontWeight: '800', color: C.onGreen },
@@ -1846,16 +1691,16 @@ const makeStyles = (C: Palette) => StyleSheet.create({
   templateName: { fontSize: 17, fontWeight: '800', color: C.ink, marginBottom: 5 },
   templateDescription: { color: C.muted, fontSize: 12, lineHeight: 18 },
   templateModeLabel: { color: C.green, fontSize: 11, fontWeight: '700', marginTop: 6 },
-  templateCount: { backgroundColor: C.greenLight, borderRadius: 13, paddingHorizontal: 12, paddingVertical: 7, alignItems: 'center', minWidth: 52 },
+  templateCount: { backgroundColor: C.greenLight, borderRadius: 13, paddingHorizontal: 12, paddingVertical: 7, alignItems: 'center', minWidth: 52, marginTop:10 },
   templateCountText: { color: C.green, fontWeight: '800', fontSize: 18 },
   templateCountLabel: { color: C.green, fontSize: 9, fontWeight: '700' },
   templatePreview: { backgroundColor: C.preview, borderRadius: 13, padding: 12, marginTop: 15, marginBottom: 12, gap: 8 },
   templateTask: { color: C.chipText, fontSize: 12 },
-  inlineActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  inlineAction: { backgroundColor: C.subtle, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10 },
-  inlineActionText: { color: C.green, fontWeight: '700', fontSize: 12 },
-  inlineActionDanger: { backgroundColor: C.dangerBg, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10 },
-  inlineActionTextDanger: { color: C.red, fontWeight: '700', fontSize: 12 },
+  inlineActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  inlineAction: { backgroundColor: 'transparent', borderRadius: 8, paddingVertical: 2, paddingHorizontal: 2 },
+  inlineActionText: { color: C.green, fontWeight: '700', fontSize: 14 },
+  inlineActionDanger: { backgroundColor: 'transparent', borderRadius: 8, paddingVertical: 2, paddingHorizontal: 2 },
+  inlineActionTextDanger: { color: C.red, fontWeight: '700', fontSize: 14 },
 
   statRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
   statCard: { flex: 1, backgroundColor: C.card, borderRadius: 18, padding: 16 },
@@ -1905,7 +1750,7 @@ const makeStyles = (C: Palette) => StyleSheet.create({
   toastAction: { color: C.orange, fontSize: 14, fontWeight: '800', paddingLeft: 16 },
 
   tabBar: { flexDirection: 'row', backgroundColor: C.bg, borderTopWidth: 1, borderTopColor: C.line, paddingTop: 8, paddingBottom: 10, paddingHorizontal: 10, minHeight: 66 },
-  tabItem: { flex: 1, alignItems: 'center', gap: 4, justifyContent: 'center', minHeight: 52 },
+  tabItem: { flex: 1, alignItems: 'center', gap: 4, justifyContent: 'center', minHeight: 56, paddingVertical: 4 },
   tabIcon: { fontSize: 20, color: C.icon, height: 23 },
   tabIconActive: { color: C.green },
   tabLabel: { fontSize: 10, color: C.icon, fontWeight: '600' },
