@@ -369,7 +369,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: any) => vo
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const imageSource = isDark ? require('./assets/dark.png') : require('./assets/icon.png');
+  const imageSource = isDark ? require('./assets/icon-dark-preview.png') : require('./assets/icon-preview.png');
 
   const submit = async () => {
     if (!email || !password) {
@@ -422,7 +422,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: any) => vo
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: isDark ? '#121512' : '#F6F5F1' }}>
-      <ImageBackground source={require('./assets/bg.png')} style={{ flex: 1, width: '100%', height: '100%' }} resizeMode="cover">
+      <ImageBackground source={require('./assets/bg.png')} style={{ flex: 1, width: '100%', height: '120%' }} resizeMode="cover">
         <Pressable style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, paddingTop: 14 }} onPress={Keyboard.dismiss}>
           <View style={{ width: '100%', maxWidth: 420, alignItems: 'center' }}>
           <View style={{ width: 150, height: 96, alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
