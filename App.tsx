@@ -1421,7 +1421,7 @@ function AppShell() {
   );
 
   const tabs: { name: Tab; icon: string }[] = [
-    { name: 'Today', icon: '⋆.˚ ☾⭒.˚' }, { name: 'Routines', icon: '⟳' }, { name: 'History', icon: '⩇⩇:⩇⩇' }, { name: 'Settings', icon: '⛯' },
+    { name: 'Today', icon: '❂' }, { name: 'Routines', icon: '𓃑' }, { name: 'History', icon: '⩇⩇:⩇⩇' }, { name: 'Settings', icon: '⛯' },
   ];
 
   // position info for the task action sheet
