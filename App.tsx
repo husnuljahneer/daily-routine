@@ -1290,8 +1290,8 @@ function AppShell() {
       {header('History', 'A record of your days.')}
 
       <View style={S.statRow}>
-        <View style={S.statCard}><Text style={S.statValue}>🔥 {streak.current}</Text><Text style={S.statLabel}>Current streak</Text></View>
-        <View style={S.statCard}><Text style={S.statValue}>🏆 {streak.best}</Text><Text style={S.statLabel}>Best streak</Text></View>
+        <View style={S.statCard}><Text style={S.statValue}>ঌ {streak.current}</Text><Text style={S.statLabel}>Current streak</Text></View>
+        <View style={S.statCard}><Text style={S.statValue}>🜲 {streak.best}</Text><Text style={S.statLabel}>Best streak</Text></View>
       </View>
 
       <View style={S.chartCard}>
@@ -1340,7 +1340,7 @@ function AppShell() {
               <View style={{ flex: 1 }}>
                 <Text style={S.historyDate}>{shortDate(day.date)}</Text>
                 <Text style={S.muted}>{day.total ? `${day.completed} completed · ${day.skipped} skipped · ${day.total} tasks` : 'No tasks'}</Text>
-                <Text style={S.historyWater}>💧 {(day.water / 1000).toFixed(2)} L logged</Text>
+                <Text style={S.historyWater}>🪼 {(day.water / 1000).toFixed(2)} L logged</Text>
                 {day.note && !open ? <Text style={S.historyNote} numberOfLines={1}>📝 {day.note}</Text> : null}
               </View>
               <Text style={S.historyArrow}>{open ? '⌄' : '›'}</Text>
@@ -1421,7 +1421,7 @@ function AppShell() {
   );
 
   const tabs: { name: Tab; icon: string }[] = [
-    { name: 'Today', icon: '☑' }, { name: 'Routines', icon: '▦' }, { name: 'History', icon: '◷' }, { name: 'Settings', icon: '⚙' },
+    { name: 'Today', icon: '⋆.˚ ☾⭒.˚' }, { name: 'Routines', icon: '⟳' }, { name: 'History', icon: '⩇⩇:⩇⩇' }, { name: 'Settings', icon: '⛯' },
   ];
 
   // position info for the task action sheet
