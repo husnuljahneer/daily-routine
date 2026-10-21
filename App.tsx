@@ -1156,7 +1156,7 @@ function AppShell() {
             <Text style={S.cardTitle}>Water</Text>
             <Text style={S.waterAmount}>{(waterTotal / 1000).toFixed(2)} <Text style={S.waterUnit}>/ {(waterGoal / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })} L</Text></Text>
           </View>
-          <View style={S.waterIcon}><Text style={{ fontSize: 24 }}>💧</Text></View>
+          <View style={S.waterIcon}><Text style={{ fontSize: 24 }}>🪼</Text></View>
         </View>
         <View style={S.progressTrack}><View style={[S.waterFillBar, { width: `${Math.min(100, (waterTotal / waterGoal) * 100)}%` }]} /></View>
         <View style={S.waterButtons}>
