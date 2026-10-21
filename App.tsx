@@ -422,8 +422,8 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: any) => vo
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: isDark ? '#121512' : '#F6F5F1' }}>
-      <ImageBackground source={require('./assets/bg.png')} style={{ flex: 1, width: '100%', height: '120%' }} resizeMode="cover">
-        <Pressable style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, paddingTop: 14 }} onPress={Keyboard.dismiss}>
+      <ImageBackground source={require('./assets/bg.png')} style={{ flex: 1, width: '100%', height: '100%' }} resizeMode="cover">
+        <Pressable style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 12 }} onPress={Keyboard.dismiss}>
           <View style={{ width: '100%', maxWidth: 420, alignItems: 'center' }}>
           <View style={{ width: 150, height: 96, alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
             <Image source={imageSource} style={{ width: 128, height: 128, resizeMode: 'contain' }} />
@@ -546,7 +546,7 @@ function AppShell({ session }: { session: any }) {
   const [taskSection, setTaskSection] = useState('');
   const [taskTime, setTaskTime] = useState('');
   const [actionTask, setActionTask] = useState<Task | null>(null);
-  const [sectionEdit, setSectionEdit] = useState<{ ids: number[]; name: string; time: string } | null>(null);
+  const [sectionEdit, setSectionEdit] = useState<{ ids: number[]; name: string; time: string; matchName: string; matchTime: string } | null>(null);
   const [customWaterModal, setCustomWaterModal] = useState(false);
   const [customWater, setCustomWater] = useState('');
   const [templateModal, setTemplateModal] = useState(false);
@@ -725,23 +725,27 @@ function AppShell({ session }: { session: any }) {
     return () => { alive = false; };
   }, [db, search, dataVersion]);
 
-  const taskKey = (task: Pick<Task, 'date' | 'title' | 'section' | 'section_time' | 'sort_order'>) => {
+  const taskKey = (task: Pick<Task, 'date' | 'title' | 'section' | 'section_time'>) => {
     const date = (task.date || '').trim();
     const title = (task.title || '').trim().toLowerCase();
     const section = (task.section || '').trim().toLowerCase();
     const time = (task.section_time || '').trim().toLowerCase();
-    const order = Number(task.sort_order ?? 0);
-    return `${date}|${order}|${title}|${section}|${time}`;
+    return `${date}|${title}|${section}|${time}`;
   };
-  const taskMatches = (a: Pick<Task, 'date' | 'title' | 'section' | 'section_time' | 'sort_order'>, b: Pick<Task, 'date' | 'title' | 'section' | 'section_time' | 'sort_order'>) => {
+  const taskMatches = (a: Pick<Task, 'date' | 'title' | 'section' | 'section_time'>, b: Pick<Task, 'date' | 'title' | 'section' | 'section_time'>) => {
     const aTitle = (a.title ?? '').trim().toLowerCase();
     const bTitle = (b.title ?? '').trim().toLowerCase();
     const aSection = (a.section ?? '').trim().toLowerCase();
     const bSection = (b.section ?? '').trim().toLowerCase();
     const aTime = (a.section_time ?? '').trim().toLowerCase();
     const bTime = (b.section_time ?? '').trim().toLowerCase();
-    return a.date === b.date && aTitle === bTitle && aSection === bSection && aTime === bTime && Number(a.sort_order ?? 0) === Number(b.sort_order ?? 0);
+    return a.date === b.date && aTitle === bTitle && aSection === bSection && aTime === bTime;
   };
+  const normalizeTaskIds = (values: Array<number | string | null | undefined>) => Array.from(new Set(
+    values
+      .map(value => Number(value))
+      .filter(value => Number.isFinite(value) && value > 0)
+  ));
   const ensureLocalTaskRow = async (task: Pick<Task, 'date' | 'title' | 'category' | 'section' | 'section_time' | 'sort_order'>) => {
     const existing = await enqueueDbWrite(() => db.getFirstAsync<Task>(
       'SELECT * FROM tasks WHERE date = ? AND title = ? AND COALESCE(section, \'\') = ? AND COALESCE(section_time, \'\') = ? AND sort_order = ?',
@@ -778,7 +782,10 @@ function AppShell({ session }: { session: any }) {
     });
   }, []);
 
-  const tasks = useMemo(() => mergeLocalAndRemoteTasks(localTasks, remoteTasks), [localTasks, remoteTasks, mergeLocalAndRemoteTasks]);
+  const tasks = useMemo(
+    () => mergeLocalAndRemoteTasks(localTasks, remoteTasks.filter(t => t.date === selectedDate)),
+    [localTasks, remoteTasks, selectedDate, mergeLocalAndRemoteTasks],
+  );
 
   /* ── Derived ── */
   const isToday = selectedDate === todayKey();
@@ -796,6 +803,9 @@ function AppShell({ session }: { session: any }) {
       const group = map.get(key) || { key, title, time, items: [] };
       group.items.push(task);
       map.set(key, group);
+    }
+    if (!map.size) {
+      return [{ key: 'empty-section', title: DAILY_LABEL, time: null, items: [] }];
     }
     return Array.from(map.values());
   }, [tasks]);
@@ -854,9 +864,23 @@ function AppShell({ session }: { session: any }) {
     setTaskTag(task.category === 'General' ? '' : task.category);
     setTaskSection(task.section || ''); setTaskTime(task.section_time || ''); setTaskModal(true);
   };
-  const pushLocalTasksToSupabase = useCallback(async (overrideTasks?: Task[]) => {
+  const pushLocalTasksToSupabase = useCallback(async (overrideTasks?: Task[], date: string = selectedDate) => {
     if (!session?.user?.id) return;
-    const rows = (overrideTasks ?? localTasks).map((task) => ({
+    const source = overrideTasks ?? localTasks;
+    // Always clear the day being edited, even when no local tasks are left.
+    const dates = Array.from(new Set([date, ...source.map(task => task.date).filter(Boolean)]));
+
+    for (const d of dates) {
+      const { error: deleteError } = await supabase
+        .from('todos')
+        .delete()
+        .eq('user_id', session.user.id)
+        .eq('date', d);
+
+      if (deleteError) throw deleteError;
+    }
+
+    const rows = source.map((task) => ({
       user_id: session.user.id,
       title: task.title,
       date: task.date,
@@ -869,15 +893,16 @@ function AppShell({ session }: { session: any }) {
       updated_at: new Date().toISOString(),
     }));
 
-    if (!rows.length) return;
+    if (!rows.length) {
+      await syncChecklist(selectedDate);
+      return;
+    }
 
-    const { error } = await supabase
-      .from('todos')
-      .upsert(rows, { onConflict: 'user_id,date,title,section,section_time', ignoreDuplicates: false });
+    const { error } = await supabase.from('todos').insert(rows);
 
     if (error) throw error;
-    await syncChecklist();
-  }, [localTasks, session, syncChecklist]);
+    await syncChecklist(selectedDate);
+  }, [localTasks, selectedDate, session, syncChecklist]);
 
   const saveTask = () => safe(async () => {
     const title = taskTitle.trim();
@@ -937,37 +962,80 @@ function AppShell({ session }: { session: any }) {
     }
     bump();
   });
-  const deleteTask = (task: Task) => safe(async () => {
-    const localMatch = localTasks.find(t => taskMatches(t, task));
-    const targetId = localMatch?.id ?? task.id;
-    await enqueueDbWrite(() => db.runAsync('DELETE FROM tasks WHERE id = ?', targetId));
+  // Copies tasks that exist only in Supabase into the local DB, so deleting works on real local rows.
+  const adoptRemoteTasks = async () => {
+    const missing = tasks.filter(t => !localTasks.some(l => taskMatches(l, t)));
+    for (const t of missing) {
+      await enqueueDbWrite(() => db.runAsync(
+        'INSERT INTO tasks(date, title, category, section, section_time, sort_order, completed, skipped) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        t.date, t.title, t.category || 'General', t.section, t.section_time, Number(t.sort_order ?? 0), t.completed ? 1 : 0, t.skipped ? 1 : 0));
+    }
+    return db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
+  };
+
+  const restoreTasks = (rows: Task[]) => safe(async () => {
+    for (const r of rows) {
+      await enqueueDbWrite(() => db.runAsync(
+        'INSERT INTO tasks(id, date, title, category, completed, skipped, sort_order, section, section_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        r.id, r.date, r.title, r.category, r.completed, r.skipped, r.sort_order, r.section, r.section_time));
+    }
     const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
     setLocalTasks(refreshed);
     if (session?.user?.id) {
-      try { await pushLocalTasksToSupabase(refreshed); } catch (error) { setSupabaseStatus(`Sync failed: ${error instanceof Error ? error.message : String(error)}`); }
+      try { await pushLocalTasksToSupabase(refreshed, selectedDate); } catch (error) { setSupabaseStatus(`Sync failed: ${error instanceof Error ? error.message : String(error)}`); }
     }
     bump();
-    showToast('Task deleted', 'Undo', () => {
-      setToast(null);
-      safe(async () => {
-        await enqueueDbWrite(() => db.runAsync(
-          'INSERT INTO tasks(id, date, title, category, completed, skipped, sort_order, section, section_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          targetId, task.date, task.title, task.category, task.completed, task.skipped, task.sort_order, task.section, task.section_time));
-        const refreshedUndo = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
-        setLocalTasks(refreshedUndo);
-        bump();
-      });
-    });
+  });
+
+  const removeTasks = async (doomed: Task[], message: string) => {
+    const ids = normalizeTaskIds(doomed.map(t => t.id));
+    if (!ids.length) { showToast('Nothing to delete', 'OK', () => setToast(null)); return; }
+
+    const marks = ids.map(() => '?').join(',');
+    await enqueueDbWrite(() => db.runAsync(`DELETE FROM tasks WHERE id IN (${marks})`, ...ids));
+    const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
+    setLocalTasks(refreshed);
+    setRemoteTasks(prev => prev.filter(r => !doomed.some(d => taskMatches(d, r)))); // vanish instantly
+
+    if (session?.user?.id) {
+      try { await pushLocalTasksToSupabase(refreshed, selectedDate); } catch (error) { setSupabaseStatus(`Sync failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    bump();
+    showToast(message, 'Undo', () => { setToast(null); restoreTasks(doomed); });
+  };
+
+  const deleteTask = (task: Task) => safe(async () => {
+    setActionTask(null);
+    const current = await adoptRemoteTasks();
+    await removeTasks(current.filter(t => taskMatches(t, task)), 'Task deleted');
+  });
+
+  const deleteSection = (group: Group) => safe(async () => {
+    if (!group.items.length) { showToast('Section is already empty', 'OK', () => setToast(null)); return; }
+    const current = await adoptRemoteTasks();
+    await removeTasks(current.filter(t => group.items.some(i => taskMatches(i, t))), 'Section deleted');
   });
 
   /* ── Reordering ── */
   const persistOrder = (groups: Group[]) => safe(async () => {
+    const flattened: Task[] = [];
+    let order = 0;
+    for (const group of groups) {
+      for (const task of group.items) {
+        flattened.push({ ...task, sort_order: order++ });
+      }
+    }
+    setLocalTasks(flattened);
+
     await enqueueDbWrite(() => db.withTransactionAsync(async () => {
-      let order = 0;
-      for (const g of groups) for (const t of g.items) await db.runAsync('UPDATE tasks SET sort_order = ? WHERE id = ?', order++, t.id);
+      for (const task of flattened) {
+        await db.runAsync('UPDATE tasks SET sort_order = ? WHERE id = ?', task.sort_order, task.id);
+      }
     }));
-    const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
-    setLocalTasks(refreshed);
+
+    if (session?.user?.id) {
+      try { await pushLocalTasksToSupabase(flattened); } catch (error) { setSupabaseStatus(`Sync failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     bump();
   });
   const moveTask = (task: Task, dir: -1 | 1) => {
@@ -989,7 +1057,7 @@ function AppShell({ session }: { session: any }) {
 
   /* ── Edit a whole section ── */
   const openSectionEdit = (g: Group) =>
-    setSectionEdit({ ids: g.items.map(t => t.id), name: g.title === DAILY_LABEL ? '' : g.title, time: g.time || '' });
+    setSectionEdit({ ids: g.items.map(t => t.id), name: g.title === DAILY_LABEL ? '' : g.title, time: g.time || '', matchName: g.title === DAILY_LABEL ? '' : g.title, matchTime: g.time || '' });
   const saveSectionEdit = () => safe(async () => {
     if (!sectionEdit) return;
     const name = sectionEdit.name.trim() || null;
@@ -998,9 +1066,27 @@ function AppShell({ session }: { session: any }) {
       time = normalizeClock(sectionEdit.time);
       if (!time) { Alert.alert('Check the time', 'Use a time like 11:00 AM or 14:30.'); return; }
     }
-    const marks = sectionEdit.ids.map(() => '?').join(',');
-    await enqueueDbWrite(() => db.runAsync(`UPDATE tasks SET section = ?, section_time = ? WHERE id IN (${marks})`, name, time, ...sectionEdit.ids));
-    setSectionEdit(null); bump();
+
+    const ids = [...new Set((sectionEdit.ids || []).map(id => Number(id)).filter(n => Number.isFinite(n)))];
+    const fallbackIds = ids.length ? [] : localTasks
+      .filter(task => task.date === selectedDate && (task.section ?? '') === (sectionEdit.matchName || '') && (task.section_time ?? '') === (sectionEdit.matchTime || ''))
+      .map(task => task.id);
+
+    const finalIds = ids.length ? ids : fallbackIds;
+    if (!finalIds.length) {
+      setSectionEdit(null);
+      return;
+    }
+
+    const marks = finalIds.map(() => '?').join(',');
+    await enqueueDbWrite(() => db.runAsync(`UPDATE tasks SET section = ?, section_time = ? WHERE id IN (${marks})`, name, time, ...finalIds));
+    const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
+    setLocalTasks(refreshed);
+    setSectionEdit(null);
+    if (session?.user?.id) {
+      try { await pushLocalTasksToSupabase(refreshed); } catch (error) { setSupabaseStatus(`Sync failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    bump();
   });
 
   /* ── Copy a day forward ── */
@@ -1063,6 +1149,7 @@ function AppShell({ session }: { session: any }) {
         await db.runAsync('DELETE FROM template_tasks WHERE template_id = ?', template.id);
         await db.runAsync('DELETE FROM templates WHERE id = ?', template.id);
       });
+      setTemplates(prev => prev.filter(t => t.id !== template.id));
       setTplVersion(v => v + 1);
     }) },
   ]);
@@ -1201,7 +1288,7 @@ function AppShell({ session }: { session: any }) {
         <Pressable onPress={openAdd}><Text style={S.addText}>+ Add task</Text></Pressable>
       </View>
 
-      {taskGroups.length === 0 ? (
+      {taskGroups.every(group => group.items.length === 0) ? (
         <View style={S.emptyCard}>
           <Text style={S.emptyEmoji}>☀️</Text>
           <Text style={S.emptyTitle}>Make {isToday ? 'today' : 'this day'} your own</Text>
@@ -1220,6 +1307,7 @@ function AppShell({ session }: { session: any }) {
               <Pressable hitSlop={8} disabled={gi === 0} onPress={() => moveSection(gi, -1)}><Text style={[S.toolText, gi === 0 && S.toolDisabled]}>▲</Text></Pressable>
               <Pressable hitSlop={8} disabled={gi === taskGroups.length - 1} onPress={() => moveSection(gi, 1)}><Text style={[S.toolText, gi === taskGroups.length - 1 && S.toolDisabled]}>▼</Text></Pressable>
               <Pressable hitSlop={8} onPress={() => openSectionEdit(group)}><Text style={S.toolText}>✎</Text></Pressable>
+              <Pressable hitSlop={8} onPress={() => deleteSection(group)}><Text style={S.toolText}>⌫</Text></Pressable>
             </View>
           </View>
           {group.items.map((task, idx) => (
@@ -1816,7 +1904,7 @@ const makeStyles = (C: Palette) => StyleSheet.create({
   toastText: { color: C.toastInk, fontSize: 14, fontWeight: '600' },
   toastAction: { color: C.orange, fontSize: 14, fontWeight: '800', paddingLeft: 16 },
 
-  tabBar: { flexDirection: 'row', backgroundColor: C.bg, borderTopWidth: 1, borderTopColor: C.line, paddingTop: 8, paddingBottom: 0, paddingHorizontal: 10, minHeight: 54 },
+  tabBar: { flexDirection: 'row', backgroundColor: C.bg, borderTopWidth: 1, borderTopColor: C.line, paddingTop: 8, paddingBottom: 10, paddingHorizontal: 10, minHeight: 66 },
   tabItem: { flex: 1, alignItems: 'center', gap: 4, justifyContent: 'center', minHeight: 52 },
   tabIcon: { fontSize: 20, color: C.icon, height: 23 },
   tabIconActive: { color: C.green },
