@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Animated, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, SafeAreaView,
+  Alert, Animated, Appearance, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, SafeAreaView,
   ScrollView, StatusBar, StyleSheet, Text, TextInput, View, useColorScheme,
 } from 'react-native';
 import { SQLiteProvider, useSQLiteContext, type SQLiteDatabase } from 'expo-sqlite';
@@ -255,19 +255,45 @@ function SwipeRow({ C, last, onRight, onLeft, children }: {
   const x = useRef(new Animated.Value(0)).current;
   const cb = useRef({ onRight, onLeft });
   cb.current = { onRight, onLeft };
-  const back = () => Animated.spring(x, { toValue: 0, useNativeDriver: true, bounciness: 6 }).start();
+
+  const back = useCallback(() => {
+    Animated.spring(x, { toValue: 0, tension: 120, friction: 8, useNativeDriver: true }).start();
+  }, [x]);
+
   const pan = useRef(PanResponder.create({
-    onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 14 && Math.abs(g.dx) > Math.abs(g.dy) * 1.6,
-    onPanResponderMove: (_, g) => x.setValue(Math.max(-110, Math.min(110, g.dx))),
+    onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+    onPanResponderMove: (_, g) => {
+      const next = Math.max(-110, Math.min(110, g.dx));
+      x.setValue(next);
+    },
     onPanResponderRelease: (_, g) => {
-      if (g.dx > 75) cb.current.onRight(); else if (g.dx < -75) cb.current.onLeft();
+      const dx = g.dx;
+      const vx = g.vx;
+      const shouldRight = dx > 72 || (vx > 0.35 && dx > 30);
+      const shouldLeft = dx < -72 || (vx < -0.35 && dx < -30);
+
+      if (shouldRight) {
+        Animated.spring(x, { toValue: 110, tension: 120, friction: 8, useNativeDriver: true }).start(() => {
+          cb.current.onRight();
+          back();
+        });
+        return;
+      }
+      if (shouldLeft) {
+        Animated.spring(x, { toValue: -110, tension: 120, friction: 8, useNativeDriver: true }).start(() => {
+          cb.current.onLeft();
+          back();
+        });
+        return;
+      }
       back();
     },
     onPanResponderTerminate: back,
+    onPanResponderTerminationRequest: () => false,
   })).current;
 
   return (
-    <View style={{ borderBottomWidth: last ? 0 : 1, borderBottomColor: C.rowLine }}>
+    <View style={{ borderBottomWidth: last ? 0 : 1, borderBottomColor: C.rowLine, overflow: 'hidden' }}>
       <View style={[StyleSheet.absoluteFill, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 12 }]}>
         <Text style={{ color: C.green, fontWeight: '800', fontSize: 12 }}>✓ Done</Text>
         <Text style={{ color: C.skipInk, fontWeight: '800', fontSize: 12 }}>Skip –</Text>
@@ -282,9 +308,18 @@ function SwipeRow({ C, last, onRight, onLeft, children }: {
 /* ───────────── App ───────────── */
 function AppShell() {
   const db = useSQLiteContext();
-  const scheme = useColorScheme();
+  const systemScheme = useColorScheme() ?? 'light';
+  const [deviceScheme, setDeviceScheme] = useState<NonNullable<ReturnType<typeof useColorScheme>>>(() => Appearance.getColorScheme() ?? 'light');
+  useEffect(() => {
+    const sub = Appearance.addChangeListener(({ colorScheme }) => {
+      setDeviceScheme(colorScheme ?? 'light');
+    });
+    return () => sub.remove();
+  }, []);
+
   const [themePref, setThemePref] = useState<ThemePref>('system');
-  const dark = themePref === 'system' ? scheme === 'dark' : themePref === 'dark';
+  const resolvedScheme = themePref === 'system' ? (systemScheme || deviceScheme || 'light') : themePref;
+  const dark = resolvedScheme === 'dark';
   const C = dark ? DARK : LIGHT;
   const S = useMemo(() => makeStyles(C), [C]);
 
