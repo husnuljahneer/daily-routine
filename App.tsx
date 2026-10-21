@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Animated, Appearance, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, SafeAreaView,
+  Alert, Animated, Appearance, Image, Keyboard, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, SafeAreaView,
   ScrollView, StatusBar, StyleSheet, Text, TextInput, View, useColorScheme,
 } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 import { SQLiteProvider, useSQLiteContext, type SQLiteDatabase } from 'expo-sqlite';
+import { supabase } from './utils/supabase';
 // Loaded defensively: if the native module isn't in this build, the app still runs (haptics just stay off).
 const Haptics = (() => {
   try { return require('expo-haptics') as typeof import('expo-haptics'); } catch { return null; }
@@ -51,6 +53,43 @@ const DEFAULT_WATER_GOAL = 3000;
 const DEFAULT_PRESETS = [150, 250, 500];
 const DAILY_LABEL = 'Daily checklist';
 const BAR_H = 72;
+
+const EmailIcon = ({ color = '#7A7F7A' }: { color?: string }) => (
+  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9Z" />
+    <Path d="M4.5 8 12 13l7.5-5" />
+  </Svg>
+);
+
+const MailBadgeIcon = ({ color = '#FFFFFF' }: { color?: string }) => (
+  <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.1} strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9Z" />
+    <Path d="M4.5 8 12 13l7.5-5" />
+  </Svg>
+);
+
+const LockIcon = ({ color = '#7A7F7A' }: { color?: string }) => (
+  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M7 10V8a5 5 0 0 1 10 0v2" />
+    <Path d="M7 10h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2Z" />
+  </Svg>
+);
+
+const EyeIcon = ({ color = '#7A7F7A' }: { color?: string }) => (
+  <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
+    <Path d="M12 14.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" />
+  </Svg>
+);
+
+const EyeOffIcon = ({ color = '#7A7F7A' }: { color?: string }) => (
+  <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M3 3l18 18" />
+    <Path d="M10.6 10.6A2.5 2.5 0 0 0 13.4 13.4" />
+    <Path d="M9.1 5.7A11.4 11.4 0 0 1 12 5.5c6.5 0 10 6.5 10 6.5a17.5 17.5 0 0 1-4.4 5.5" />
+    <Path d="M6.2 6.2A17.8 17.8 0 0 0 2 12s3.5 6.5 10 6.5a10.5 10.5 0 0 0 5.9-1.8" />
+  </Svg>
+);
 
 /* ───────────── Date + time helpers ───────────── */
 const dateKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -306,7 +345,139 @@ function SwipeRow({ C, last, onRight, onLeft, children }: {
 }
 
 /* ───────────── App ───────────── */
-function AppShell() {
+function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: any) => void }) {
+  const scheme = useColorScheme();
+  const isDark = scheme === 'dark';
+  const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [keepSignedIn, setKeepSignedIn] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const imageSource = isDark ? require('./assets/dark.png') : require('./assets/icon.png');
+
+  const submit = async () => {
+    if (!email || !password) {
+      setError('Enter both email and password.');
+      return;
+    }
+    setLoading(true); setError('');
+    try {
+      const action = mode === 'sign-in'
+        ? supabase.auth.signInWithPassword({ email, password })
+        : supabase.auth.signUp({ email, password });
+      const { data, error: authError } = await action;
+      if (authError) throw authError;
+
+      if (mode === 'sign-up') {
+        if (!data.session) {
+          Alert.alert('Check your email', 'Your account was created. Confirm the email we sent you, then sign in below.', [
+            { text: 'OK', onPress: () => { setMode('sign-in'); setPassword(''); } },
+          ]);
+          setEmail('');
+          setPassword('');
+          return;
+        }
+      }
+
+      if (data.session) onAuthenticated(data.session);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Authentication failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!email.trim()) {
+      Alert.alert('Add your email', 'Enter your email address first so we can send a reset link.');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: 'daily-routine://reset-password',
+      });
+      if (error) throw error;
+      Alert.alert('Check your email', 'We sent a password reset link to your inbox.');
+    } catch (e) {
+      Alert.alert('Could not send reset email', e instanceof Error ? e.message : 'Please try again.');
+    }
+  };
+
+  return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: isDark ? '#121512' : '#F6F5F1', paddingTop: 14 }}>
+      <Pressable style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 }} onPress={Keyboard.dismiss}>
+        <View style={{ width: '100%', maxWidth: 420, alignItems: 'center' }}>
+          <View style={{ width: 150, height: 96, alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
+            <Image source={imageSource} style={{ width: 128, height: 128, resizeMode: 'contain' }} />
+          </View>
+
+          <Text style={{ fontSize: 24, lineHeight: 34, letterSpacing: -1.2,marginBottom: 4,marginTop: 4, fontWeight: '800', color: isDark ? '#F0F1EE' : '#20251F', textAlign: 'center' }}>Daily Routine</Text>
+          <Text style={{ fontSize: 14, fontWeight: '500', color: isDark ? '#D6D9D2' : '#5B645F', textAlign: 'center', marginTop: 4, marginBottom: 18 }}>Build better days, one checklist at a time.</Text>
+
+          <View style={{ width: '100%', flexDirection: 'row', backgroundColor: isDark ? '#292D28' : '#E5E9E1', borderRadius: 18, padding: 6, marginBottom: 18 }}>
+            <Pressable style={[{ flex: 1, borderRadius: 14, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' }, mode === 'sign-in' ? { backgroundColor: isDark ? '#2E5A43' : '#3B6A4F' } : { backgroundColor: 'transparent' }]} onPress={() => setMode('sign-in')}>
+              <Text style={{ fontSize: 14, fontWeight: '800', color: mode === 'sign-in' ? '#FFFFFF' : isDark ? '#F0F1EE' : '#2A362F' }}>Sign In</Text>
+            </Pressable>
+            <Pressable style={[{ flex: 1, borderRadius: 14, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' }, mode === 'sign-up' ? { backgroundColor: isDark ? '#EAEDE8' : '#F5F7F2' } : { backgroundColor: 'transparent' }]} onPress={() => setMode('sign-up')}>
+              <Text style={{ fontSize: 14, fontWeight: '800', color: mode === 'sign-up' ? (isDark ? '#1A1E1A' : '#1E2B26') : (isDark ? '#E7E9E4' : '#2A362F') }}>Create Account</Text>
+            </Pressable>
+          </View>
+
+          <View style={{ width: '100%' }}>
+            <Text style={{ fontSize: 12, fontWeight: '700', color: isDark ? '#D9DDD6' : '#5B645F', marginBottom: 8 }}>Email</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: isDark ? '#40463F' : '#D7DCD4', backgroundColor: isDark ? '#171A16' : '#F7F8F5', paddingHorizontal: 12, marginBottom: 14 }}>
+              <View style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center', marginRight: 10 }}><EmailIcon color={isDark ? '#C4C8C2' : '#7A7F7A'} /></View>
+              <TextInput value={email} onChangeText={setEmail} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" placeholder="you@example.com" placeholderTextColor={isDark ? '#889286' : '#8F978F'} style={{ flex: 1, height: 48, color: isDark ? '#F1F1EE' : '#1F261F', fontSize: 16 }} />
+            </View>
+
+            <Text style={{ fontSize: 12, fontWeight: '700', color: isDark ? '#D9DDD6' : '#5B645F', marginBottom: 8 }}>Password</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: isDark ? '#40463F' : '#D7DCD4', backgroundColor: isDark ? '#171A16' : '#F7F8F5', paddingHorizontal: 12, marginBottom: 12 }}>
+              <View style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center', marginRight: 10 }}><LockIcon color={isDark ? '#C4C8C2' : '#7A7F7A'} /></View>
+              <TextInput value={password} onChangeText={setPassword} secureTextEntry={!showPassword} placeholder="Password" placeholderTextColor={isDark ? '#889286' : '#8F978F'} style={{ flex: 1, height: 48, color: isDark ? '#F1F1EE' : '#1F261F', fontSize: 16 }} />
+              <Pressable onPress={() => setShowPassword((v) => !v)} style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center', padding: 0 }}>
+                {showPassword ? <EyeOffIcon color={isDark ? '#D0D5CD' : '#636A63'} /> : <EyeIcon color={isDark ? '#D0D5CD' : '#636A63'} />}
+              </Pressable>
+            </View>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <Pressable style={{ flexDirection: 'row', alignItems: 'center' }} onPress={() => setKeepSignedIn((v) => !v)}>
+                <View style={{ width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: isDark ? '#7F8B80' : '#7D8C81', backgroundColor: keepSignedIn ? (isDark ? '#3D6F51' : '#3A7857') : 'transparent', alignItems: 'center', justifyContent: 'center', marginRight: 8 }}>
+                  {keepSignedIn ? <Text style={{ fontSize: 11, color: '#FFFFFF' }}>✓</Text> : null}
+                </View>
+                <Text style={{ fontSize: 13, color: isDark ? '#F3F4F0' : '#262E2A', fontWeight: '600' }}>Keep me signed in</Text>
+              </Pressable>
+              <Pressable onPress={handleForgotPassword}>
+                <Text style={{ fontSize: 13, color: isDark ? '#DCE6E0' : '#374B42', fontWeight: '600' }}>Forgot password?</Text>
+              </Pressable>
+            </View>
+
+            {error ? <Text style={{ color: '#B94D42', fontSize: 12, marginBottom: 12 }}>{error}</Text> : null}
+
+            <Pressable style={{ backgroundColor: isDark ? '#365E46' : '#315D40', borderRadius: 16, paddingVertical: 15, alignItems: 'center', marginBottom: 16 }} onPress={submit} disabled={loading}>
+              <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '800' }}>{loading ? 'Please wait...' : mode === 'sign-in' ? 'Sign in' : 'Create account'}  →</Text>
+            </Pressable>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
+              <View style={{ flex: 1, height: 1, backgroundColor: isDark ? '#3A4039' : '#D8DDD6' }} />
+              <Text style={{ marginHorizontal: 10, color: isDark ? '#A7ACA6' : '#7D847E', fontWeight: '600', fontSize: 11 }}>or continue with</Text>
+              <View style={{ flex: 1, height: 1, backgroundColor: isDark ? '#3A4039' : '#D8DDD6' }} />
+            </View>
+
+            <Pressable style={{ borderWidth: 1, borderColor: isDark ? '#3E443F' : '#D8DDD6', backgroundColor: isDark ? '#161915' : '#F7F8F5', borderRadius: 16, paddingVertical: 12, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ fontSize: 16, fontWeight: '700', color: isDark ? '#F1F3EF' : '#1E2B26' }}> Continue with Apple</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Pressable>
+    </SafeAreaView>
+  );
+}
+
+function AppShell({ session }: { session: any }) {
   const db = useSQLiteContext();
   const systemScheme = useColorScheme() ?? 'light';
   const [deviceScheme, setDeviceScheme] = useState<NonNullable<ReturnType<typeof useColorScheme>>>(() => Appearance.getColorScheme() ?? 'light');
@@ -325,11 +496,15 @@ function AppShell() {
 
   const [tab, setTab] = useState<Tab>('Today');
   const [selectedDate, setSelectedDate] = useState(todayKey());
+  const [supabaseStatus, setSupabaseStatus] = useState('');
+  const [lastSyncedAt, setLastSyncedAt] = useState('');
+  const [remoteTodos, setRemoteTodos] = useState<Array<{ id: number | string; title: string; completed: boolean; date: string | null; user_id: string }>>([]);
   const [dataVersion, setDataVersion] = useState(0);
   const [tplVersion, setTplVersion] = useState(0);
   const bump = useCallback(() => setDataVersion(v => v + 1), []);
 
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [localTasks, setLocalTasks] = useState<Task[]>([]);
+  const [remoteTasks, setRemoteTasks] = useState<Task[]>([]);
   const [waterEntries, setWaterEntries] = useState<WaterEntry[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [noteDraft, setNoteDraft] = useState('');
@@ -374,6 +549,63 @@ function AppShell() {
     toastTimer.current = setTimeout(() => setToast(null), 5000);
   };
 
+  const syncChecklist = useCallback(async (date = selectedDate) => {
+    if (!session?.user?.id) {
+      setSupabaseStatus('Sign in to sync to Supabase.');
+      setRemoteTodos([]);
+      return;
+    }
+
+    try {
+      setSupabaseStatus('Syncing checklist with Supabase...');
+      const { data, error } = await supabase
+        .from('todos')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .eq('date', date)
+        .order('updated_at', { ascending: false });
+
+      if (error) throw error;
+
+      const rows = (data ?? []).map((item: any) => ({
+        id: Number(item.id),
+        title: item.title ?? item.name ?? 'Untitled task',
+        completed: Boolean(item.completed),
+        date: item.date ?? todayKey(),
+        user_id: item.user_id ?? session.user.id,
+        section: item.section ?? null,
+        section_time: item.section_time ?? null,
+        sort_order: Number(item.sort_order ?? 0),
+        category: item.category ?? 'General',
+        skipped: Boolean(item.skipped),
+      }));
+
+      setRemoteTodos(rows);
+      setRemoteTasks(rows.map((item: any) => ({
+        id: Number(item.id),
+        date: item.date ?? todayKey(),
+        title: item.title ?? item.name ?? 'Untitled task',
+        category: item.category ?? 'General',
+        section: item.section ?? null,
+        section_time: item.section_time ?? null,
+        completed: item.completed ? 1 : 0,
+        skipped: item.skipped ? 1 : 0,
+        sort_order: item.sort_order ?? 0,
+      })));
+      const stamp = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      setLastSyncedAt(stamp);
+      setSupabaseStatus(rows.length ? `Supabase synced (${rows.length} remote task${rows.length === 1 ? '' : 's'})` : 'Supabase connected, no tasks yet');
+    } catch (error) {
+      setSupabaseStatus(`Supabase unavailable: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+  }, [session]);
+
+  useEffect(() => {
+    if (session?.user?.id) {
+      syncChecklist(selectedDate);
+    }
+  }, [session, selectedDate, syncChecklist]);
+
   const dateRef = useRef(selectedDate);
   dateRef.current = selectedDate;
 
@@ -407,7 +639,7 @@ function AppShell() {
     (async () => {
       const t = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
       const w = await db.getAllAsync<WaterEntry>('SELECT * FROM water_entries WHERE date = ? ORDER BY id', selectedDate);
-      if (alive) { setTasks(t); setWaterEntries(w); }
+      if (alive) { setLocalTasks(t); setWaterEntries(w); }
     })().catch(e => Alert.alert('Database error', String(e)));
     return () => { alive = false; };
   }, [db, selectedDate, dataVersion]);
@@ -471,6 +703,42 @@ function AppShell() {
     })().catch(() => {});
     return () => { alive = false; };
   }, [db, search, dataVersion]);
+
+  const taskKey = (task: Pick<Task, 'date' | 'title' | 'section' | 'section_time'>) => {
+    const title = (task.title || '').trim().toLowerCase();
+    const date = (task.date || '').trim();
+    const section = (task.section || '').trim().toLowerCase();
+    const time = (task.section_time || '').trim().toLowerCase();
+    return `${date}|${title}|${section}|${time}`;
+  };
+
+  const mergeLocalAndRemoteTasks = useCallback((local: Task[], remote: Task[]) => {
+    const merged = new Map<string, Task>();
+
+    const add = (task: Task) => {
+      const key = taskKey(task);
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, task);
+        return;
+      }
+      const existingTime = Number(existing.id) || 0;
+      const nextTime = Number(task.id) || 0;
+      if (nextTime > existingTime) merged.set(key, task);
+    };
+
+    local.forEach(add);
+    remote.forEach(add);
+
+    return Array.from(merged.values()).sort((a, b) => {
+      const aOrder = Number(a.sort_order ?? 0);
+      const bOrder = Number(b.sort_order ?? 0);
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return String(a.title).localeCompare(String(b.title));
+    });
+  }, []);
+
+  const tasks = useMemo(() => mergeLocalAndRemoteTasks(localTasks, remoteTasks), [localTasks, remoteTasks, mergeLocalAndRemoteTasks]);
 
   /* ── Derived ── */
   const isToday = selectedDate === todayKey();
@@ -546,6 +814,31 @@ function AppShell() {
     setTaskTag(task.category === 'General' ? '' : task.category);
     setTaskSection(task.section || ''); setTaskTime(task.section_time || ''); setTaskModal(true);
   };
+  const pushLocalTasksToSupabase = useCallback(async (overrideTasks?: Task[]) => {
+    if (!session?.user?.id) return;
+    const rows = (overrideTasks ?? localTasks).map((task) => ({
+      user_id: session.user.id,
+      title: task.title,
+      date: task.date,
+      category: task.category || 'General',
+      section: task.section || null,
+      section_time: task.section_time || null,
+      completed: Boolean(task.completed),
+      skipped: Boolean(task.skipped),
+      sort_order: Number(task.sort_order ?? 0),
+      updated_at: new Date().toISOString(),
+    }));
+
+    if (!rows.length) return;
+
+    const { error } = await supabase
+      .from('todos')
+      .upsert(rows, { onConflict: 'user_id,date,title,section,section_time', ignoreDuplicates: false });
+
+    if (error) throw error;
+    await syncChecklist();
+  }, [localTasks, session, syncChecklist]);
+
   const saveTask = () => safe(async () => {
     const title = taskTitle.trim();
     if (!title) { Alert.alert('Add a task name', 'Enter a short name for this checklist item.'); return; }
@@ -556,30 +849,55 @@ function AppShell() {
       if (!time) { Alert.alert('Check the time', 'Use a time like 11:00 AM or 14:30.'); return; }
     }
     const tag = cleanTag(taskTag);
+    let current: Task | null = null;
     if (editingTask) {
+      current = editingTask;
       await db.runAsync('UPDATE tasks SET title = ?, category = ?, section = ?, section_time = ? WHERE id = ?', title, tag, section, time, editingTask.id);
     } else {
-      await db.runAsync('INSERT INTO tasks(date, title, category, section, section_time, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
-        selectedDate, title, tag, section, time, await nextOrder(selectedDate));
+      const nextSort = await nextOrder(selectedDate);
+      const result = await db.runAsync('INSERT INTO tasks(date, title, category, section, section_time, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
+        selectedDate, title, tag, section, time, nextSort);
+      current = { id: Number((result as any)?.lastInsertRowId ?? 0), date: selectedDate, title, category: tag, section, section_time: time, completed: 0, skipped: 0, sort_order: nextSort } as Task;
     }
-    setTaskModal(false); setEditingTask(null); bump();
+    const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
+    setLocalTasks(refreshed);
+    setTaskModal(false); setEditingTask(null);
+    if (session?.user?.id) {
+      try { await pushLocalTasksToSupabase(refreshed); } catch (error) { setSupabaseStatus(`Sync failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    bump();
   });
   const toggleTask = (task: Task) => safe(async () => {
     const completing = !task.completed;
-    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, completed: completing ? 1 : 0, skipped: 0 } : t)); // instant feedback
+    setLocalTasks(prev => prev.map(t => t.id === task.id ? { ...t, completed: completing ? 1 : 0, skipped: 0 } : t));
     if (completing) haptic(tasks.every(t => t.id === task.id || t.completed || t.skipped) ? 'success' : 'light');
     await db.runAsync('UPDATE tasks SET completed = ?, skipped = 0 WHERE id = ?', completing ? 1 : 0, task.id);
+    const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
+    setLocalTasks(refreshed);
+    if (session?.user?.id) {
+      try { await pushLocalTasksToSupabase(refreshed); } catch (error) { setSupabaseStatus(`Sync failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     bump();
   });
   const skipTask = (task: Task) => safe(async () => {
     const skipping = !task.skipped;
-    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, skipped: skipping ? 1 : 0, completed: 0 } : t));
+    setLocalTasks(prev => prev.map(t => t.id === task.id ? { ...t, skipped: skipping ? 1 : 0, completed: 0 } : t));
     if (skipping) haptic(tasks.every(t => t.id === task.id || t.completed || t.skipped) ? 'success' : 'light');
     await db.runAsync('UPDATE tasks SET skipped = ?, completed = 0 WHERE id = ?', skipping ? 1 : 0, task.id);
+    const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
+    setLocalTasks(refreshed);
+    if (session?.user?.id) {
+      try { await pushLocalTasksToSupabase(refreshed); } catch (error) { setSupabaseStatus(`Sync failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     bump();
   });
   const deleteTask = (task: Task) => safe(async () => {
     await db.runAsync('DELETE FROM tasks WHERE id = ?', task.id);
+    const refreshed = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
+    setLocalTasks(refreshed);
+    if (session?.user?.id) {
+      try { await pushLocalTasksToSupabase(refreshed); } catch (error) { setSupabaseStatus(`Sync failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     bump();
     showToast('Task deleted', 'Undo', () => {
       setToast(null);
@@ -587,6 +905,8 @@ function AppShell() {
         await db.runAsync(
           'INSERT INTO tasks(id, date, title, category, completed, skipped, sort_order, section, section_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
           task.id, task.date, task.title, task.category, task.completed, task.skipped, task.sort_order, task.section, task.section_time);
+        const refreshedUndo = await db.getAllAsync<Task>('SELECT * FROM tasks WHERE date = ? ORDER BY sort_order, id', selectedDate);
+        setLocalTasks(refreshedUndo);
         bump();
       });
     });
@@ -1009,6 +1329,30 @@ function AppShell() {
     <>
       {header('Settings')}
       <View style={S.settingsCard}>
+        <Text style={S.cardTitle}>Account</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10, marginBottom: 12 }}>
+          <View style={{ width: 26, height: 26, borderRadius: 8, backgroundColor: '#F1C9CD', alignItems: 'center', justifyContent: 'center', marginRight: 10 }}>
+            <MailBadgeIcon color="#FFFFFF" />
+          </View>
+          <Text style={{ fontSize: 15, fontWeight: '600', color: C.ink, flexShrink: 1 }} numberOfLines={1}>
+            {session?.user?.email || 'Signed in'}
+          </Text>
+        </View>
+        <Pressable
+          style={[S.smallSave, { backgroundColor: C.red, marginTop: 4 }]}
+          onPress={async () => {
+            try {
+              await supabase.auth.signOut();
+              Alert.alert('Signed out', 'You have been logged out.');
+            } catch (e) {
+              Alert.alert('Logout failed', e instanceof Error ? e.message : 'Please try again.');
+            }
+          }}
+        >
+          <Text style={[S.smallSaveText, { color: '#FFFFFF' }]}>Logout</Text>
+        </Pressable>
+      </View>
+      <View style={S.settingsCard}>
         <Text style={S.cardTitle}>Appearance</Text>
         <View style={S.modeButtons}>
           {themeOptions.map(o => (
@@ -1039,6 +1383,21 @@ function AppShell() {
       <View style={S.settingsCard}>
         <Text style={S.cardTitle}>Your data stays local</Text>
         <Text style={S.settingsBody}>Tasks, routines, water logs, notes and history are stored in the app's SQLite database on this device. There is no account, backend or analytics. Deleting the app may delete its local data, so add a backup option before relying on it long-term.</Text>
+      </View>
+      <View style={S.settingsCard}>
+        <Text style={S.cardTitle}>Supabase sync</Text>
+        <Text style={S.settingsBody}>{supabaseStatus || 'Checking connection…'}</Text>
+        <Text style={[S.muted, { marginTop: 8, color: lastSyncedAt ? C.green : C.muted }]}>
+          {lastSyncedAt ? `Last synced: ${lastSyncedAt}` : 'Last synced: never'}
+        </Text>
+        {remoteTodos.length ? (
+          <View style={{ marginTop: 12, gap: 6 }}>
+            {remoteTodos.slice(0, 4).map((item) => (
+              <Text key={String(item.id)} style={S.muted}>• {item.title}{item.completed ? ' ✓' : ''}</Text>
+            ))}
+          </View>
+        ) : null}
+        <Pressable style={[S.smallSave, { marginTop: 12 }]} onPress={() => syncChecklist(selectedDate)}><Text style={S.smallSaveText}>Sync checklist</Text></Pressable>
       </View>
     </>
   );
@@ -1216,11 +1575,51 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
 }
 
 export default function App() {
+  const [session, setSession] = useState<any>(null);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+
+    const boot = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      setSession(data.session ?? null);
+      setReady(true);
+    };
+
+    boot();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (active) {
+        setSession(nextSession ?? null);
+        setReady(true);
+      }
+    });
+
+    return () => {
+      active = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  if (!ready) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F6F5F1' }}>
+        <Text style={{ fontSize: 16, fontWeight: '700', color: '#20251F' }}>Loading…</Text>
+      </View>
+    );
+  }
+
+  if (!session) {
+    return <AuthScreen onAuthenticated={setSession} />;
+  }
+
   return (
     <ErrorBoundary>
       <React.Suspense fallback={<View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF' }}><Text>Loading database…</Text></View>}>
         <SQLiteProvider databaseName="daily-routine.db" onInit={initialise} useSuspense>
-          <AppShell />
+          <AppShell session={session} />
         </SQLiteProvider>
       </React.Suspense>
     </ErrorBoundary>

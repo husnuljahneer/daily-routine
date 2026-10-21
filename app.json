@@ -10,7 +10,15 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.personal.dailyroutine"
     },
-    "plugins": ["expo-sqlite"],
-    "experiments": { "typedRoutes": false }
+    "plugins": [
+      "expo-sqlite",
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    },
+    "android": {
+      "package": "com.personal.dailyroutine"
+    }
   }
 }
